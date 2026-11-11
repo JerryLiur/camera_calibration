@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Working brief: optical-bench operators inspect corners before trusting parameters.
+Domain: shared lens, splitter, focal plane, board poses, residuals, turntable zero.
+Color world: white board, graphite sensor window, cobalt controls, silver rules, amber evidence.
+Signature: a coordinate-aware image viewport beside pose inclusion and spatial coverage.
+Intent: complete a defensible Spike-only calibration without obscuring source or coordinate state.
+Hierarchy: image/corners first; pose list second; model and diagnostics after solving.
+Palette: white optical bench and graphite viewing well; cobalt reserved for the next action.
+Depth: fine borders, no decorative shadows; four surface tones separate controls from observation.
+Typography: YaHei UI text, tabular numeric data and monospaced matrices; 13/14/18/24 scale.
+Spacing: 4px base, 12–16px control groups, 24px section breaks.
+Defaults replaced: KPI cards with coverage, marketing hero with work surface, generic sidebar with procedural tabs. -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#1256c0">
+  <title>Spike 标定工具</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到工作区</a>
+  <header class="app-header">
+    <div class="brand">
+      <svg viewBox="0 0 36 36" aria-hidden="true"><path d="M3 18h11m8 0h11M18 3v11m0 8v11"/><circle cx="18" cy="18" r="10"/><rect x="14" y="14" width="8" height="8" rx="1"/></svg>
+      <div><h1>Spike 标定工具</h1><p>共用镜头 <span>／</span> 1:1 分光 <span>／</span> Spike 单支路</p></div>
+    </div>
+    <div class="header-state"><span class="offline-tag"><i></i>离线数据模式</span><span id="data-evidence" class="badge">等待数据</span></div>
+  </header>
+  <div class="project-bar">
+    <div class="project-picker"><label for="project-select">当前工程</label><select id="project-select"><option value="">尚未创建工程</option></select><button id="new-project-button" class="button secondary lock" type="button">新建工程</button></div>
+    <div class="project-actions"><button id="refresh-button" class="button subtle lock" type="button" title="从本机服务重新读取">刷新</button><a id="export-link" class="button secondary disabled" aria-disabled="true">导出标定包</a><a id="report-link" class="button secondary disabled" aria-disabled="true" target="_blank" rel="noopener">查看报告</a></div>
+  </div>
+  <nav class="workflow-tabs" aria-label="标定步骤"><button type="button" data-tab="capture" class="workflow-tab active" aria-current="step"><span class="step-number">01</span>采集与检查<span id="capture-count" class="tab-count">0</span></button><button type="button" data-tab="intrinsics" class="workflow-tab"><span class="step-number">02</span>内参与畸变</button><button type="button" data-tab="turntable" class="workflow-tab"><span class="step-number">03</span>转台关系</button><button type="button" data-tab="config" class="workflow-tab"><span class="step-number">04</span>工程配置</button></nav>
+  <main id="main" tabindex="-1" aria-busy="true"><div class="loading-placeholder"><span class="spinner"></span>正在读取本地工程…</div></main>
+  <footer class="statusbar"><span id="status-line" role="status" aria-live="polite">正在连接本机标定服务</span><span id="revision-line">原始 Spike 保持不变</span></footer>
+  <div id="notice" class="notice" role="alert" hidden><span id="notice-text"></span><button type="button" id="dismiss-notice" aria-label="关闭消息">×</button></div>
+  <dialog id="project-dialog" aria-labelledby="project-dialog-title"><form id="new-project-form"><h2 id="project-dialog-title">新建标定工程</h2><p class="muted">工程保存到本机，标定对象为装配后的完整 Spike 支路。</p><label class="field">工程名称<input id="project-name" name="name" required maxlength="100" placeholder="例如：Spike 工位 A · 固定焦距" autocomplete="off"></label><div class="dialog-actions"><button class="button secondary" type="button" id="cancel-project">取消</button><button class="button primary lock" type="submit">创建工程</button></div></form></dialog>
+  <script src="/app.js" defer></script>
+</body>
+</html>

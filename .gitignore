@@ -1,0 +1,23 @@
+# Python environments and caches
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Generated packages, local measurements and reports
+build/
+dist/
+output/
+spike_calibration_workspace/
+*.log
+
+# Local credentials and editor settings
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
