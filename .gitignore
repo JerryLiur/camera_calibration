@@ -21,3 +21,6 @@ spike_calibration_workspace/
 .vscode/
 Thumbs.db
 .DS_Store
+
+# WorkBuddy local project data (session memory, not source code)
+.workbuddy/

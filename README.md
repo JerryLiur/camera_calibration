@@ -12,6 +12,25 @@
 
 本仓库是离线工具源码。RGB 联合标定、相机在线采集、转台控制和完整六自由度外参不在本版范围内。合成示例和软件测试不代表真实设备标定精度。
 
+## Qt 6 / C++ / OpenCV 重构版（设备接入）
+
+相机 SDK 是 C++ 的，为便于设备连接与控制，已新增同流程、同算法的原生实现：[`qt/`](qt/README.md)。
+
+- 界面改为 **Qt 6 Widgets** 原生窗口，去掉 Python、本机 HTTP 服务、浏览器与 WebView2 Runtime。
+- 算法与校验用 **C++17 + OpenCV** 重写，标定流程、坐标约定、工程 JSON、导出包和 HTML 报告与 Python 版兼容；`spike_calibration_workspace` 里的工程可直接打开。
+- 新增 `ICameraDevice` 设备边界与独立采集线程：厂商 SDK 通过一个函数指针表接入，界面可连接设备、调曝光/增益、实时预览并把停稳帧直接采集成标定观测。接入步骤见 [SDK 接入说明](qt/docs/SDK_INTEGRATION.md)，模块映射见 [架构说明](qt/docs/ARCHITECTURE.md)。
+- 控制台自检 `spike_selftest` 可读取本仓库的模拟真值数据，对 K、畸变、视线角和转台零位做跨实现数值对照。
+
+构建与运行：
+
+```powershell
+cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="<Qt6 安装目录>"
+cmake --build qt/build --config Release
+qt\build\Release\spike_selftest.exe --observations output\mock_calibration_data\scenes\clean --ground-truth output\mock_calibration_data\ground_truth.json
+```
+
+根目录下的 Python 源码保留为算法与数据契约的参考实现，不再作为设备联调的主技术栈。
+
 ## 安装与启动
 
 验证环境为 Windows、Python 3.12。先克隆仓库，在仓库根目录执行：
@@ -67,8 +86,9 @@ py -3.12 -m venv .venv
 
 | 路径 | 内容 |
 | --- | --- |
-| `spike_calibration_tool/` | 求解、导入、工程管理、HTTP、SDK、桌面和命令行 |
-| `spike_calibration_tool/web/` | 本机工作台界面，无外部前端 CDN 依赖 |
+| `qt/` | **新版**：Qt 6 Widgets + C++ + OpenCV 桌面实现，含 C++ 相机 SDK 接入层 |
+| `spike_calibration_tool/` | Python 参考实现：求解、导入、工程管理、HTTP、SDK、桌面和命令行 |
+| `spike_calibration_tool/web/` | Python 版本机工作台界面，无外部前端 CDN 依赖 |
 | `calibration_system/targets.py` | 原工程共用的靶标检测、质量及覆盖分析 |
 | `rgb_spike_fusion/spatial_calibration.py` | 原工程共用的几何标定辅助实现 |
 | `tests/` | 标定工具回归测试 |
