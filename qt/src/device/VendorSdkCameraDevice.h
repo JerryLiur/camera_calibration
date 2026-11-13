@@ -27,6 +27,9 @@ struct VendorSdkApi {
 class VendorSdkCameraDevice : public ICameraDevice {
 public:
     explicit VendorSdkCameraDevice(VendorSdkApi api);
+    ~VendorSdkCameraDevice() override;
+    VendorSdkCameraDevice(const VendorSdkCameraDevice&) = delete;
+    VendorSdkCameraDevice& operator=(const VendorSdkCameraDevice&) = delete;
 
     QString backend() const override { return QStringLiteral("vendor-sdk"); }
     bool open(const QVariantMap& parameters, QString* error) override;

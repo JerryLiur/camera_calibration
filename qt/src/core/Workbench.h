@@ -10,6 +10,7 @@
 #include <QStringList>
 
 #include <mutex>
+#include <atomic>
 
 namespace spike {
 
@@ -55,7 +56,7 @@ private:
     QString m_root;
     QMap<QString, QJsonObject> m_projects;
     QStringList m_loadErrors;
-    bool m_hardwareConnected = false;
+    std::atomic_bool m_hardwareConnected{false};
     mutable std::recursive_mutex m_mutex;
 };
 

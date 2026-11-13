@@ -17,6 +17,9 @@
 // Exit codes: 0 = all checks passed, 1 = failure, 77 = mock data not available.
 
 #include "core/CalibrationSDK.h"
+#include "core/Calibration.h"
+#include "core/Fixtures.h"
+#include "core/Targets.h"
 #include "core/Importers.h"
 #include "core/Workbench.h"
 
@@ -31,18 +34,22 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLockFile>
 #include <QStringList>
 #include <QThread>
 #include <QVariantMap>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <atomic>
+#include <thread>
 
 namespace {
 
@@ -278,6 +285,37 @@ void testDecode(Context& ctx)
 {
     const QString name = QStringLiteral("decode");
     const spike::Config config = mockConfig();
+
+    auto tinyNpy = [](const QByteArray& shape, const QByteArray& order = "False",
+                      const QByteArray& descr = "|u1") {
+        QByteArray header = "{'descr': '" + descr + "', 'fortran_order' :  " + order
+            + ", 'shape': (" + shape + "), }\n";
+        QByteArray bytes = QByteArray::fromHex("934e554d50590100");
+        bytes.append(static_cast<char>(header.size() & 255));
+        bytes.append(static_cast<char>((header.size() >> 8) & 255));
+        return bytes + header + QByteArray(8, '\1');
+    };
+    for (const QByteArray& shape : {QByteArray("-2, 2, 2"), QByteArray("2x, 2, 2"),
+                                  QByteArray("2147483647, 2147483647, 2147483647")}) {
+        ctx.checks.rejects(name, QStringLiteral("NPY 非法/溢出维度拒绝: %1").arg(QString::fromLatin1(shape)), [&] {
+            spike::reconstructFrame(tinyNpy(shape), QStringLiteral(".npy"), QJsonObject());
+        }, QStringLiteral("NPY"));
+    }
+    ctx.checks.rejects(name, QStringLiteral("NPY Fortran 顺序任意空白均拒绝"), [&] {
+        spike::reconstructFrame(tinyNpy("2, 2, 2", "True"), QStringLiteral(".npy"), QJsonObject());
+    }, QStringLiteral("Fortran"));
+    ctx.checks.rejects(name, QStringLiteral("NPY 非法字节序拒绝"), [&] {
+        spike::reconstructFrame(tinyNpy("2, 2, 2", "False", "?u1"), QStringLiteral(".npy"), QJsonObject());
+    }, QStringLiteral("NPY"));
+    ctx.checks.rejects(name, QStringLiteral("NPY 超长头部拒绝"), [&] {
+        spike::reconstructFrame(QByteArray::fromHex("934e554d50590200ffffffff") + QByteArray(16, ' '),
+                                QStringLiteral(".npy"), QJsonObject());
+    }, QStringLiteral("NPY"));
+    ctx.checks.rejects(name, QStringLiteral("手动电平不绕过 NaN 图像校验"), [&] {
+        cv::Mat invalid(2, 2, CV_64F, cv::Scalar(std::numeric_limits<double>::quiet_NaN()));
+        spike::previewGray(invalid, QJsonObject{{QStringLiteral("black_level"), 0},
+                                               {QStringLiteral("white_level"), 255}});
+    }, QStringLiteral("灰度图像"));
 
     const QByteArray pngBytes = readBytes(ctx.resolve(QStringLiteral("files/png/pose_00.png")));
     const cv::Mat png = spike::decodeImageBytes(pngBytes, cv::IMREAD_UNCHANGED);
@@ -614,23 +652,11 @@ void testScenarios(Context& ctx)
     if (hasScene(QStringLiteral("flat_distorted"))) {
         const SceneRun run = runObservationScene(ctx, QStringLiteral("flat_distorted"),
                                                  filesOf(QStringLiteral("flat_distorted")));
-        ctx.checks.require(name, QStringLiteral("flat_distorted 求解未被拦截（记录盲区）"),
-                           run.solved, run.rejection);
-        if (run.solved) {
-            const double truthFx = element(ctx.truth.value(QStringLiteral("K")).toArray(), 0, 0);
-            ctx.checks.greaterThan(name, QStringLiteral("flat_distorted 焦距误差 > 20 px"),
-                                   std::abs(modelValue(run.model, 0, 0) - truthFx), 20.0);
-            ctx.checks.lessThan(
-                name, QStringLiteral("flat_distorted 重投影仍自洽 < 0.15 px"),
-                run.model.value(QStringLiteral("diagnostics")).toObject()
-                    .value(QStringLiteral("fit_rms_px")).toDouble(), 0.15);
-            ctx.checks.greaterThan(name, QStringLiteral("flat_distorted 指向误差 > 0.5°"),
-                                   run.rayMaxErrorDeg, 0.5);
-            ctx.sceneReport.insert(QStringLiteral("flat_distorted"),
-                                   QJsonObject{{QStringLiteral("fx"), modelValue(run.model, 0, 0)},
-                                               {QStringLiteral("ray_max_error_deg"),
-                                                run.rayMaxErrorDeg}});
-        }
+        ctx.checks.require(name, QStringLiteral("flat_distorted 由姿态质量门禁拒绝"),
+                           !run.solved && run.rejection.contains(QStringLiteral("姿态约束退化")), run.rejection);
+        ctx.sceneReport.insert(QStringLiteral("flat_distorted"),
+                               QJsonObject{{QStringLiteral("rejected"), !run.solved},
+                                           {QStringLiteral("reason"), run.rejection}});
     }
 
     if (hasScene(QStringLiteral("degenerate"))) {
@@ -645,21 +671,11 @@ void testScenarios(Context& ctx)
     if (hasScene(QStringLiteral("degenerate_noisy"))) {
         const SceneRun run = runObservationScene(ctx, QStringLiteral("degenerate_noisy"),
                                                  filesOf(QStringLiteral("degenerate_noisy")));
-        if (!run.solved) {
-            ctx.checks.require(name, QStringLiteral("degenerate_noisy 给出明确拒绝"), true,
-                               run.rejection);
-        } else {
-            // Documented limitation of the 5-parameter model + homography guard:
-            // 0.04 px of noise slips past the rank check and yields an absurd fx.
-            // The port must still produce finite, serialisable JSON in that case.
-            const double fx = modelValue(run.model, 0, 0);
-            ctx.checks.require(name, QStringLiteral("degenerate_noisy 模型可序列化为有限 JSON"),
-                               spike::finiteJson(run.model));
-            ctx.checks.greaterThan(name, QStringLiteral("degenerate_noisy 焦距荒谬（已记录局限）"),
-                                   std::abs(fx), 10000.0);
-            ctx.sceneReport.insert(QStringLiteral("degenerate_noisy"),
-                                   QJsonObject{{QStringLiteral("fx"), fx}});
-        }
+        ctx.checks.require(name, QStringLiteral("degenerate_noisy 由姿态约束质量门禁拒绝"),
+                           !run.solved && run.rejection.contains(QStringLiteral("姿态约束退化")), run.rejection);
+        ctx.sceneReport.insert(QStringLiteral("degenerate_noisy"),
+                               QJsonObject{{QStringLiteral("rejected"), !run.solved},
+                                           {QStringLiteral("reason"), run.rejection}});
     }
 
     if (hasScene(QStringLiteral("leak"))) {
@@ -802,11 +818,18 @@ namespace fake_sdk {
 int g_channels = 1;
 int g_width = 64;
 int g_height = 48;
+int g_openCount = 0;
+int g_closeCount = 0;
+bool g_rejectParameters = false;
+int g_grabResult = 0;
+bool g_throwGrab = false;
+bool g_dimensionsOnly = false;
 
 const char* version() { return "fake-sdk/1.0"; }
 
 void* openDevice(const char*, char* error, int capacity)
 {
+    ++g_openCount;
     if (error && capacity > 0) {
         const QByteArray text = QStringLiteral("模拟相机已连接").toUtf8();
         std::snprintf(error, static_cast<size_t>(capacity), "%s", text.constData());
@@ -814,11 +837,11 @@ void* openDevice(const char*, char* error, int capacity)
     return reinterpret_cast<void*>(0x1);
 }
 
-void closeDevice(void*) {}
+void closeDevice(void*) { ++g_closeCount; }
 
-int setInt(void*, const char*, int) { return 0; }
+int setInt(void*, const char*, int) { return g_rejectParameters ? -1 : 0; }
 
-int setDouble(void*, const char*, double) { return 0; }
+int setDouble(void*, const char*, double) { return g_rejectParameters ? -1 : 0; }
 
 int getInt(void*, const char*, int* value)
 {
@@ -828,9 +851,12 @@ int getInt(void*, const char*, int* value)
 
 int grab(void*, unsigned char* data, int capacity, int* width, int* height, int* channels, int)
 {
+    if (g_throwGrab) throw std::runtime_error("simulated SDK grab exception");
+    if (g_grabResult) return g_grabResult;
     *width = g_width;
     *height = g_height;
     *channels = g_channels;
+    if (g_dimensionsOnly) return 0;
     const int needed = g_width * g_height * g_channels;
     if (needed > capacity) return -2;   // over-buffer: the adapter must reject it
     for (int i = 0; i < needed; ++i) data[i] = static_cast<unsigned char>((i * 7) % 251);
@@ -862,6 +888,17 @@ void testVendor(Context& ctx)
     parameters.insert(QStringLiteral("channels"), 1);
     parameters.insert(QStringLiteral("exposure_us"), 1200);
     parameters.insert(QStringLiteral("gain"), 2.5);
+
+    {
+        spike::VendorSdkCameraDevice huge(api);
+        auto hugeParameters = parameters;
+        hugeParameters.insert(QStringLiteral("max_width"), std::numeric_limits<int>::max());
+        hugeParameters.insert(QStringLiteral("max_height"), std::numeric_limits<int>::max());
+        hugeParameters.insert(QStringLiteral("channels"), 4);
+        QString hugeError;
+        ctx.checks.require(name, QStringLiteral("极大配置尺寸不能乘法溢出绕过缓冲限制"),
+                           !huge.open(hugeParameters, &hugeError) && !huge.isOpen(), hugeError);
+    }
 
     auto device = spike::createCameraDevice(QStringLiteral("vendor-sdk"));
     QString error;
@@ -910,6 +947,54 @@ void testVendor(Context& ctx)
                        !smallDevice->grab(frame, 1000, &error) && !error.isEmpty(), error);
     fake_sdk::g_width = 64;
     fake_sdk::g_height = 48;
+    fake_sdk::g_dimensionsOnly = true;
+    fake_sdk::g_width = std::numeric_limits<int>::max();
+    fake_sdk::g_height = std::numeric_limits<int>::max();
+    fake_sdk::g_channels = 4;
+    ctx.checks.require(name, QStringLiteral("SDK极大返回尺寸不能乘法溢出绕过缓冲限制"),
+                       !device->grab(frame, 1000, &error) && error.contains(QStringLiteral("缓冲")), error);
+    fake_sdk::g_dimensionsOnly = false;
+    fake_sdk::g_width = 64;
+    fake_sdk::g_height = 48;
+    fake_sdk::g_channels = 1;
+
+    const int beforeOpen = fake_sdk::g_openCount;
+    const int beforeClose = fake_sdk::g_closeCount;
+    {
+        spike::VendorSdkCameraDevice lifecycle(api);
+        lifecycle.open(parameters, &error);
+        lifecycle.open(parameters, &error);
+    }
+    ctx.checks.require(name, QStringLiteral("重连与析构恰好释放每个 SDK 句柄"),
+                       fake_sdk::g_openCount - beforeOpen == 2
+                           && fake_sdk::g_closeCount - beforeClose == 2);
+    fake_sdk::g_rejectParameters = true;
+    spike::VendorSdkCameraDevice rejected(api);
+    const bool rejectedOpened = rejected.open(parameters, &error);
+    ctx.checks.require(name, QStringLiteral("参数设置失败必须连接失败且释放设备"),
+                       !rejectedOpened && !rejected.isOpen() && error.contains(QStringLiteral("参数")), error);
+    fake_sdk::g_rejectParameters = false;
+
+    // Timeout during streaming is expected, but an explicit still request needs feedback.
+    spike::DeviceWorker worker;
+    int workerErrors = 0;
+    QString lastWorkerError;
+    QObject::connect(&worker, &spike::DeviceWorker::errorOccurred, &worker, [&](const QString& message) {
+        ++workerErrors;
+        lastWorkerError = message;
+    });
+    worker.openDevice(QStringLiteral("vendor-sdk"), parameters);
+    fake_sdk::g_grabResult = 1;
+    worker.grabStill();
+    ctx.checks.require(name, QStringLiteral("显式采集超时只报告一次错误"),
+                       workerErrors == 1 && lastWorkerError.contains(QStringLiteral("超时")), lastWorkerError);
+    fake_sdk::g_grabResult = 0;
+    fake_sdk::g_throwGrab = true;
+    bool escaped = false;
+    try { worker.grabStill(); } catch (...) { escaped = true; }
+    ctx.checks.require(name, QStringLiteral("SDK 采集异常不逃出 Qt 槽"), !escaped && workerErrors == 2);
+    fake_sdk::g_throwGrab = false;
+    worker.closeDevice();
 }
 
 // ---------------------------------------------------------------------------
@@ -918,6 +1003,45 @@ void testVendor(Context& ctx)
 void testPersistence(Context& ctx)
 {
     const QString name = QStringLiteral("persistence");
+    const QString invalidRoot = QDir(ctx.output).filePath(QStringLiteral("not-a-directory.txt"));
+    writeText(invalidRoot, QStringLiteral("existing user file"));
+    ctx.checks.rejects(name, QStringLiteral("工程目录指向普通文件时启动立即拒绝"), [&] {
+        spike::Workbench invalidWorkspace(invalidRoot);
+    }, QStringLiteral("无法创建工程目录"));
+    const QString isolated = QDir(ctx.output).filePath(QStringLiteral("robustness_workspace"));
+    spike::Workbench first(isolated);
+    QJsonObject shared = first.createProject(QStringLiteral("Concurrent persistence"));
+    const QString sharedId = shared.value(QStringLiteral("id")).toString();
+    spike::Workbench second(isolated);
+    const QJsonObject firstChange{{QStringLiteral("operator"), QStringLiteral("writer-1")}};
+    const QJsonObject secondChange{{QStringLiteral("operator"), QStringLiteral("writer-2")}};
+    {
+        QLockFile held(QDir(isolated).filePath(sharedId + QStringLiteral(".json.qt-lock")));
+        ctx.checks.require(name, QStringLiteral("测试取得独立进程保存锁"), held.tryLock(0));
+        ctx.checks.rejects(name, QStringLiteral("另一保存者持锁时拒绝覆盖"), [&] {
+            first.updateConfig(sharedId, firstChange);
+        }, QStringLiteral("正在保存"));
+    }
+    first.updateConfig(sharedId, firstChange);
+    ctx.checks.rejects(name, QStringLiteral("过期修订不能覆盖其他窗口"), [&] {
+        second.updateConfig(sharedId, secondChange);
+    }, QStringLiteral("另一窗口修改"));
+    ctx.checks.require(name, QStringLiteral("冲突后内存刷新到磁盘修订"),
+                       second.getProject(sharedId).value(QStringLiteral("config")).toObject()
+                           .value(QStringLiteral("operator")).toString() == QStringLiteral("writer-1"));
+    const QString badId = spike::makeId();
+    writeText(QDir(isolated).filePath(badId + QStringLiteral(".json")),
+              spike::dumpsJson(QJsonObject{{QStringLiteral("id"), badId}}));
+    spike::Workbench repaired(isolated);
+    ctx.checks.require(name, QStringLiteral("字段缺失的损坏工程隔离并报告"),
+                       repaired.state().value(QStringLiteral("load_errors")).toArray().size() >= 1);
+    const QString badBundlePath = QDir(ctx.output).filePath(QStringLiteral("invalid_bundle.json"));
+    writeText(badBundlePath, spike::dumpsJson(QJsonObject{
+        {QStringLiteral("format"), QStringLiteral("spike-calibration-bundle")},
+        {QStringLiteral("format_version"), 1}, {QStringLiteral("project"), QJsonObject()}}));
+    ctx.checks.rejects(name, QStringLiteral("SDK 加载阶段拒绝缺失模型"), [&] {
+        spike::CalibrationSDK invalidSdk(badBundlePath);
+    }, QStringLiteral("模型"));
     ctx.checks.require(name, QStringLiteral("全链路工程已创建"), !ctx.pipelineProjectId.isEmpty());
     if (ctx.pipelineProjectId.isEmpty()) return;
 
@@ -966,6 +1090,19 @@ void testPersistence(Context& ctx)
                            !exportBundle.value(QStringLiteral("hardware_certified")).toBool());
 
         spike::CalibrationSDK sdk(bundlePath);
+        QJsonObject altered = exportBundle;
+        auto alteredProject = altered.value(QStringLiteral("project")).toObject();
+        auto alteredConfig = alteredProject.value(QStringLiteral("config")).toObject();
+        auto alteredOrientation = alteredConfig.value(QStringLiteral("orientation")).toObject();
+        alteredOrientation.insert(QStringLiteral("flip_x"), !alteredOrientation.value(QStringLiteral("flip_x")).toBool());
+        alteredConfig.insert(QStringLiteral("orientation"), alteredOrientation);
+        alteredProject.insert(QStringLiteral("config"), alteredConfig);
+        altered.insert(QStringLiteral("project"), alteredProject);
+        const QString alteredPath = QDir(ctx.output).filePath(QStringLiteral("altered_bundle.json"));
+        writeText(alteredPath, spike::dumpsJson(altered));
+        ctx.checks.rejects(name, QStringLiteral("SDK 拒绝方向被篡改的旧模型"), [&] {
+            spike::CalibrationSDK invalidSdk(alteredPath);
+        }, QStringLiteral("不一致"));
         const QJsonArray center = QJsonArray{QJsonArray{QJsonValue(320.0), QJsonValue(240.0)}};
         const QJsonObject sdkResult = sdk.query(center);
         const QJsonObject directResult = reopened.query(ctx.latestCleanProject, center);
@@ -1026,6 +1163,88 @@ void testPersistence(Context& ctx)
     }, QStringLiteral("同一采集序列"));
 }
 
+void testAdditionalModes(Context& ctx)
+{
+    const QString name = QStringLiteral("additional_modes");
+    {
+        spike::Workbench concurrent(QDir(ctx.output).filePath(QStringLiteral("status_concurrency_workspace")));
+        const QString id = concurrent.createProject(QStringLiteral("Concurrent device status"))
+                               .value(QStringLiteral("id")).toString();
+        concurrent.loadDemo(id);
+        std::atomic_bool running{false};
+        QString solveError;
+        std::thread algorithm([&] {
+            running.store(true);
+            try { for (int i = 0; i < 8; ++i) concurrent.solve(id); }
+            catch (const std::exception& e) { solveError = QString::fromUtf8(e.what()); }
+        });
+        while (!running.load()) std::this_thread::yield();
+        QThread::msleep(10);
+        QElapsedTimer statusTimer;
+        statusTimer.start();
+        bool statusMatches = true;
+        for (int i = 0; i < 1000; ++i) {
+            concurrent.setHardwareConnected(i % 2 != 0);
+            statusMatches &= concurrent.hardwareConnected() == (i % 2 != 0);
+        }
+        const qint64 statusMs = statusTimer.elapsed();
+        algorithm.join();
+        ctx.checks.require(name, QStringLiteral("算法运行时1000次设备状态同步不阻塞UI"),
+                           statusMatches && statusMs < 100 && solveError.isEmpty(),
+                           QStringLiteral("状态同步 %1 ms；%2").arg(statusMs).arg(solveError));
+    }
+    {
+        const auto config = spike::validateConfig(spike::defaultConfigJson());
+        auto captures = spike::demoCaptures(config);
+        captures.front().source.insert(QStringLiteral("sha256"), QString(64, QLatin1Char('a')));
+        auto model = spike::solveIntrinsics(captures, config);
+        auto testCapture = spike::captureToJson(captures.back());
+        testCapture.insert(QStringLiteral("source"), QJsonObject{{QStringLiteral("sha256"), QString(64, QLatin1Char('A'))}});
+        captures.back() = spike::validateCapture(testCapture);
+        ctx.checks.rejects(name, QStringLiteral("同一源文件哈希改变大小写仍拒绝独立验证"), [&] {
+            spike::validateIntrinsics(model, captures, config);
+        }, QStringLiteral("独立"));
+    }
+    for (int rotation : {0, 90, 180, 270}) {
+        for (bool flipX : {false, true}) {
+            for (bool flipY : {false, true}) {
+                spike::Config config = spike::validateConfig(spike::defaultConfigJson());
+                config.orientation.rotationDeg = rotation;
+                config.orientation.flipX = flipX;
+                config.orientation.flipY = flipY;
+                const auto captures = spike::demoCaptures(config);
+                const auto model = spike::solveIntrinsics(captures, config);
+                const auto validation = spike::validateIntrinsics(model, captures, config);
+                const QString label = QStringLiteral("旋转 %1 / X镜像 %2 / Y镜像 %3").arg(rotation).arg(flipX).arg(flipY);
+                ctx.checks.lessThan(name, label + QStringLiteral(" 验证P95<0.2px"),
+                                    validation.value(QStringLiteral("p95_px")).toDouble(), 0.2);
+            }
+        }
+    }
+    for (const QString& kind : {QStringLiteral("circles"), QStringLiteral("asymmetric_circles")}) {
+        cv::Mat grid(500, 600, CV_8U, cv::Scalar(255));
+        for (int y = 0; y < 7; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                const int gx = kind == QStringLiteral("circles") ? x : 2 * x + y % 2;
+                cv::circle(grid, {100 + 45 * gx, 80 + 45 * y}, 12, cv::Scalar(0), -1, cv::LINE_AA);
+            }
+        }
+        const auto result = spike::detectTarget(grid, QJsonObject{{QStringLiteral("kind"), kind},
+            {QStringLiteral("cols"), 4}, {QStringLiteral("rows"), 7}, {QStringLiteral("square_length_m"), 0.01}});
+        ctx.checks.require(name, kind + QStringLiteral(" 检出28点"), result.found && result.points.size() == 28);
+    }
+    const std::vector<uchar> pulses{1, 0, 1, 0, 1};
+    const auto count = spike::spikeRepresentation(pulses, 5, 1, 1, QStringLiteral("count"), std::nullopt);
+    const auto rate = spike::spikeRepresentation(pulses, 5, 1, 1, QStringLiteral("rate"), 0.001);
+    const auto interval = spike::spikeRepresentation(pulses, 5, 1, 1, QStringLiteral("interval"), 0.001);
+    ctx.checks.closeTo(name, QStringLiteral("count 脉冲计数"), count.image.at<double>(0, 0), 3, 1e-9);
+    ctx.checks.closeTo(name, QStringLiteral("rate 发放率"), rate.image.at<double>(0, 0), 600, 1e-9);
+    ctx.checks.closeTo(name, QStringLiteral("interval 倒数间隔"), interval.image.at<double>(0, 0), 500, 1e-9);
+    ctx.checks.rejects(name, QStringLiteral("rate 缺少已核实采样周期拒绝"), [&] {
+        spike::spikeRepresentation(pulses, 5, 1, 1, QStringLiteral("rate"), std::nullopt);
+    }, QStringLiteral("period"));
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -1046,12 +1265,9 @@ int main(int argc, char* argv[])
     }
 
     QDir().mkpath(ctx.output);
-    // Repeated local runs must start from a clean workspace. Only directories that
-    // follow the *_workspace convention (as CTest passes) are cleared.
-    if (QFileInfo(ctx.dataRoot).fileName().endsWith(QStringLiteral("_workspace"))
-        && QFileInfo::exists(ctx.dataRoot)) {
-        QDir(ctx.dataRoot).removeRecursively();
-    }
+    // Never remove a caller-supplied workspace (the real app workspace has the
+    // same suffix). Isolate each run and preserve its evidence for inspection.
+    ctx.dataRoot = QDir(ctx.dataRoot).filePath(QStringLiteral("run_") + spike::makeId());
     QDir().mkpath(ctx.dataRoot);
     ctx.manifest = readJson(QDir(ctx.mockData).filePath(QStringLiteral("manifest.json"))).toObject();
     ctx.truth = readJson(QDir(ctx.mockData).filePath(
@@ -1070,6 +1286,7 @@ int main(int argc, char* argv[])
     ctx.suite(QStringLiteral("device"), [&] { testDevice(ctx); });
     ctx.suite(QStringLiteral("vendor"), [&] { testVendor(ctx); });
     ctx.suite(QStringLiteral("persistence"), [&] { testPersistence(ctx); });
+    ctx.suite(QStringLiteral("additional_modes"), [&] { testAdditionalModes(ctx); });
 
     QJsonObject summary;
     summary.insert(QStringLiteral("app"), QStringLiteral("spike-calibration-qt-integration"));

@@ -116,11 +116,12 @@ NpyInfo parseNpy(const QByteArray& bytes)
     } else {
         fail(QStringLiteral("无法读取不含对象的二值Spike NPY"));
     }
-    require(headerStart + static_cast<int>(headerLength) <= bytes.size(),
+    require(static_cast<quint64>(headerLength) <= static_cast<quint64>(bytes.size() - headerStart),
             QStringLiteral("无法读取不含对象的二值Spike NPY"));
     const QString header = QString::fromLatin1(bytes.mid(headerStart, static_cast<int>(headerLength)));
-    require(!header.contains(QStringLiteral("fortran_order': True"))
-                && !header.contains(QStringLiteral("fortran_order\": True")),
+    const QRegularExpression orderRx(QStringLiteral("['\"]fortran_order['\"]\\s*:\\s*(True|False)\\b"));
+    const auto orderMatch = orderRx.match(header);
+    require(orderMatch.hasMatch() && orderMatch.captured(1) == QStringLiteral("False"),
             QStringLiteral("无法读取不含对象的二值Spike NPY（不支持 Fortran 顺序）"));
 
     QRegularExpression descrRx(QStringLiteral("'descr'\\s*:\\s*'([^']+)'"));
@@ -129,6 +130,8 @@ NpyInfo parseNpy(const QByteArray& bytes)
     const QString descr = descrMatch.captured(1);
     require(descr.size() >= 2, QStringLiteral("无法读取不含对象的二值Spike NPY"));
     const char endian = descr.at(0).toLatin1();
+    require(endian == '<' || endian == '>' || endian == '|' || endian == '=',
+            QStringLiteral("无法读取不含对象的二值Spike NPY（字节序无效）"));
     const char kind = descr.at(1).toLatin1();
     bool itemsizeOk = false;
     const int itemsize = descr.mid(2).toInt(&itemsizeOk);
@@ -136,18 +139,26 @@ NpyInfo parseNpy(const QByteArray& bytes)
                 && (kind == 'b' || kind == 'u' || kind == 'i' || kind == 'f'),
             QStringLiteral("无法读取不含对象的二值Spike NPY"));
     require((kind == 'f' && (itemsize == 4 || itemsize == 8))
-                || (kind != 'f' && (itemsize == 1 || itemsize == 2 || itemsize == 4 || itemsize == 8)),
+                || (kind == 'b' && itemsize == 1)
+                || ((kind == 'u' || kind == 'i') && (itemsize == 1 || itemsize == 2 || itemsize == 4 || itemsize == 8)),
             QStringLiteral("无法读取不含对象的二值Spike NPY"));
 
     QRegularExpression shapeRx(QStringLiteral("'shape'\\s*:\\s*\\(([^)]*)\\)"));
     const QRegularExpressionMatch shapeMatch = shapeRx.match(header);
     require(shapeMatch.hasMatch(), QStringLiteral("无法读取不含对象的二值Spike NPY"));
-    QRegularExpression numberRx(QStringLiteral("\\d+"));
+    QRegularExpression dimensionsRx(QStringLiteral("^\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,?\\s*$"));
+    const auto dimensions = dimensionsRx.match(shapeMatch.captured(1));
+    require(dimensions.hasMatch(), QStringLiteral("Spike NPY 必须是二值 [T,H,W] 数组，最多一亿个元素"));
     std::vector<int> shape;
-    auto it = numberRx.globalMatch(shapeMatch.captured(1));
-    while (it.hasNext()) shape.push_back(it.next().captured().toInt());
-    require(shape.size() == 3 && shape[0] > 0 && shape[1] > 0 && shape[2] > 0,
-            QStringLiteral("Spike NPY 必须是二值 [T,H,W] 数组，最多一亿个元素"));
+    qint64 elements = 1;
+    for (int i = 1; i <= 3; ++i) {
+        bool ok = false;
+        const int dimension = dimensions.captured(i).toInt(&ok);
+        require(ok && dimension > 0 && dimension <= 100000000LL / elements,
+                QStringLiteral("Spike NPY 必须是二值 [T,H,W] 数组，最多一亿个元素"));
+        elements *= dimension;
+        shape.push_back(dimension);
+    }
 
     NpyInfo info;
     info.ticks = shape[0];
@@ -157,7 +168,6 @@ NpyInfo parseNpy(const QByteArray& bytes)
     info.kind = kind;
     info.littleEndian = endian != '>';
     info.dataOffset = headerStart + static_cast<int>(headerLength);
-    const qint64 elements = static_cast<qint64>(shape[0]) * shape[1] * shape[2];
     require(elements <= 100000000LL
                 && static_cast<qint64>(shape[1]) * shape[2] <= 25000000LL,
             QStringLiteral("Spike NPY 必须是二值 [T,H,W] 数组，最多一亿个元素"));
@@ -309,10 +319,14 @@ FileRecord FileRecord::fromJson(const QJsonObject& object)
 
 cv::Mat decodeImageBytes(const QByteArray& bytes, int flags)
 {
+    require(!bytes.isEmpty() && bytes.size() <= 64 * 1024 * 1024,
+            QStringLiteral("文件为空或超过64MiB导入限制"));
     const cv::Mat buffer(1, static_cast<int>(bytes.size()), CV_8UC1,
                          const_cast<char*>(bytes.constData()));
     cv::Mat image = cv::imdecode(buffer, flags);
     require(!image.empty(), QStringLiteral("无法解码图像文件"));
+    require(static_cast<qint64>(image.rows) * image.cols <= 25000000LL,
+            QStringLiteral("图像超过2500万像素限制"));
     return image;
 }
 
@@ -335,7 +349,7 @@ cv::Mat previewGray(const cv::Mat& image, const QJsonObject& options)
     const QJsonValue highValue = options.value(QStringLiteral("white_level"));
     if (!isNone(lowValue)) { low = requireNumber(lowValue, QStringLiteral("黑电平")); haveLow = true; }
     if (!isNone(highValue)) { high = requireNumber(highValue, QStringLiteral("白电平")); haveHigh = true; }
-    if (!haveLow || !haveHigh) {
+    {
         double minimum = std::numeric_limits<double>::infinity();
         double maximum = -std::numeric_limits<double>::infinity();
         for (int r = 0; r < data.rows; ++r) {

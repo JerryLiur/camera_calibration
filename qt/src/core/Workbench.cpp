@@ -13,6 +13,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QLockFile>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QVector>
@@ -59,14 +60,29 @@ QJsonObject readProjectFile(const QString& path)
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) fail(QStringLiteral("无法读取工程文件：%1").arg(path));
     const QJsonValue value = strictLoads(file.readAll());
-    return requireObject(value, QStringLiteral("工程"));
+    const QJsonObject project = requireObject(value, QStringLiteral("工程"));
+    const QString name = requireString(project.value(QStringLiteral("name")), QStringLiteral("工程名称"));
+    require(!name.trimmed().isEmpty() && name.size() <= 120, QStringLiteral("工程名称无效"));
+    validateConfig(requireObject(project.value(QStringLiteral("config")), QStringLiteral("工程配置")));
+    capturesFromJson(requireArray(project.value(QStringLiteral("captures")), QStringLiteral("工程观测")));
+    require(requireInt(project.value(QStringLiteral("revision")), QStringLiteral("工程修订")) >= 0,
+            QStringLiteral("工程修订无效"));
+    if (!isNone(project.value(QStringLiteral("model")))) {
+        const auto model = requireObject(project.value(QStringLiteral("model")), QStringLiteral("内参模型"));
+        cameraFromModel(model);
+        require(model.value(QStringLiteral("config_fingerprint")).toString()
+                    == configFingerprint(project.value(QStringLiteral("config")).toObject()),
+                QStringLiteral("内参模型与工程光学/方向配置不一致，请重新标定"));
+    }
+    return project;
 }
 
 } // namespace
 
 Workbench::Workbench(const QString& root) : m_root(root)
 {
-    QDir().mkpath(m_root);
+    require(QDir().mkpath(m_root) && QFileInfo(m_root).isDir(),
+            QStringLiteral("无法创建工程目录：%1").arg(QDir::toNativeSeparators(m_root)));
     QDir directory(m_root);
     const QFileInfoList files = directory.entryInfoList({QStringLiteral("*.json")}, QDir::Files);
     for (const QFileInfo& file : files) {
@@ -86,14 +102,12 @@ Workbench::Workbench(const QString& root) : m_root(root)
 
 void Workbench::setHardwareConnected(bool connected)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_hardwareConnected = connected;
+    m_hardwareConnected.store(connected, std::memory_order_relaxed);
 }
 
 bool Workbench::hardwareConnected() const
 {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    return m_hardwareConnected;
+    return m_hardwareConnected.load(std::memory_order_relaxed);
 }
 
 void Workbench::checkId(const QString& id) const
@@ -138,7 +152,7 @@ QJsonObject Workbench::state() const
     capabilities.insert(QStringLiteral("sensor"), QStringLiteral("Spike"));
     capabilities.insert(QStringLiteral("mode"), QStringLiteral("offline"));
     capabilities.insert(QStringLiteral("device_sdk"), QStringLiteral("C++ ICameraDevice"));
-    capabilities.insert(QStringLiteral("hardware_connected"), m_hardwareConnected);
+    capabilities.insert(QStringLiteral("hardware_connected"), hardwareConnected());
     capabilities.insert(QStringLiteral("optics"),
                         QStringLiteral("shared lens / 1:1 splitter / Spike branch"));
     capabilities.insert(QStringLiteral("max_upload_bytes"), kMaxUploadBytes);
@@ -162,6 +176,8 @@ QJsonObject Workbench::save(QJsonObject project)
     const QString id = project.value(QStringLiteral("id")).toString();
     checkId(id);
     const QString path = QDir(m_root).filePath(id + QStringLiteral(".json"));
+    QLockFile projectLock(path + QStringLiteral(".qt-lock"));
+    require(projectLock.tryLock(0), QStringLiteral("另一窗口正在保存该工程，请稍后重试"));
     if (QFileInfo::exists(path)) {
         const QJsonObject stored = readProjectFile(path);
         if (stored.value(QStringLiteral("revision")).toInt()

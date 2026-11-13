@@ -15,6 +15,7 @@ ConfigPanel::ConfigPanel(Workbench* workbench, QWidget* parent)
 {
     auto* root = new QHBoxLayout(this);
     auto* left = new QVBoxLayout();
+    left->setSpacing(16);
     auto* targetGroup = makeGroup(QStringLiteral("标定板与图像方向"), this);
     auto* targetForm = new QFormLayout(targetGroup);
     m_kind = new QComboBox(targetGroup);
@@ -22,6 +23,7 @@ ConfigPanel::ConfigPanel(Workbench* workbench, QWidget* parent)
     m_kind->addItem(QStringLiteral("对称圆点阵"), QStringLiteral("circles"));
     m_kind->addItem(QStringLiteral("非对称圆点阵"), QStringLiteral("asymmetric_circles"));
     m_spacing = new QLineEdit(QStringLiteral("0.025"), targetGroup);
+    m_spacing->setObjectName(QStringLiteral("targetSpacing"));
     m_cols = new QLineEdit(QStringLiteral("9"), targetGroup);
     m_rows = new QLineEdit(QStringLiteral("6"), targetGroup);
     m_rotation = new QComboBox(targetGroup);
@@ -53,12 +55,15 @@ ConfigPanel::ConfigPanel(Workbench* workbench, QWidget* parent)
     opticsForm->addRow(new QLabel(QStringLiteral(
         "目标 → 共用镜头 → 1:1 分光器 → Spike / RGB。RGB 保持正式安装，本工程只使用 Spike 支路求解。"), opticsGroup));
     left->addWidget(opticsGroup);
+    left->addStretch(1);
     root->addLayout(left, 3);
 
     auto* right = new QVBoxLayout();
+    right->setSpacing(16);
     auto* acceptanceGroup = makeGroup(QStringLiteral("验收阈值与操作人"), this);
     auto* acceptanceForm = new QFormLayout(acceptanceGroup);
     m_intrinsicsThreshold = new QLineEdit(acceptanceGroup);
+    m_intrinsicsThreshold->setObjectName(QStringLiteral("intrinsicsThreshold"));
     m_intrinsicsThreshold->setPlaceholderText(QStringLiteral("留空仅报告测量值"));
     m_turntableThreshold = new QLineEdit(acceptanceGroup);
     m_turntableThreshold->setPlaceholderText(QStringLiteral("留空仅报告测量值"));
@@ -73,6 +78,13 @@ ConfigPanel::ConfigPanel(Workbench* workbench, QWidget* parent)
     right->addWidget(m_save);
     right->addStretch(1);
     root->addLayout(right, 2);
+
+    for (auto* label : findChildren<QLabel*>()) {
+        if (label->text().size() > 38) {
+            label->setWordWrap(true);
+            label->setStyleSheet(QStringLiteral("color:#56677d;font-weight:400;"));
+        }
+    }
 
     connect(m_save, &QPushButton::clicked, this, &ConfigPanel::onSave);
 }
@@ -110,6 +122,12 @@ QJsonObject ConfigPanel::collectConfig() const
 
 void ConfigPanel::setProject(const QJsonObject& project)
 {
+    // A solve/query/selection refresh must not erase unsaved configuration edits.
+    if (!project.isEmpty() && project.value(QStringLiteral("id")) == m_project.value(QStringLiteral("id"))
+        && project.value(QStringLiteral("config")) == m_project.value(QStringLiteral("config"))) {
+        m_project = project;
+        return;
+    }
     m_project = project;
     const QJsonObject config = project.value(QStringLiteral("config")).toObject();
     const QJsonObject target = config.value(QStringLiteral("target")).toObject();
@@ -119,7 +137,7 @@ void ConfigPanel::setProject(const QJsonObject& project)
     m_kind->setCurrentIndex(m_kind->findData(target.value(QStringLiteral("kind")).toString()));
     m_cols->setText(QString::number(target.value(QStringLiteral("cols")).toInt()));
     m_rows->setText(QString::number(target.value(QStringLiteral("rows")).toInt()));
-    m_spacing->setText(fmt(target.value(QStringLiteral("square_length_m")).toDouble(), 6));
+    m_spacing->setText(QString::number(target.value(QStringLiteral("square_length_m")).toDouble(), 'g', 17));
     m_rotation->setCurrentIndex(m_rotation->findData(orientation.value(QStringLiteral("rotation_deg")).toInt()));
     m_flipX->setChecked(orientation.value(QStringLiteral("flip_x")).toBool());
     m_flipY->setChecked(orientation.value(QStringLiteral("flip_y")).toBool());
@@ -127,9 +145,9 @@ void ConfigPanel::setProject(const QJsonObject& project)
     m_focus->setText(optics.value(QStringLiteral("focus_note")).toString());
     m_splitter->setText(optics.value(QStringLiteral("splitter_note")).toString());
     m_intrinsicsThreshold->setText(acceptance.value(QStringLiteral("intrinsics_p95_px")).isNull()
-                                       ? QString() : fmt(acceptance.value(QStringLiteral("intrinsics_p95_px")).toDouble(), 4));
+                                       ? QString() : QString::number(acceptance.value(QStringLiteral("intrinsics_p95_px")).toDouble(), 'g', 17));
     m_turntableThreshold->setText(acceptance.value(QStringLiteral("turntable_p95_deg")).isNull()
-                                      ? QString() : fmt(acceptance.value(QStringLiteral("turntable_p95_deg")).toDouble(), 4));
+                                      ? QString() : QString::number(acceptance.value(QStringLiteral("turntable_p95_deg")).toDouble(), 'g', 17));
     m_operator->setText(config.value(QStringLiteral("operator")).toString());
     m_save->setEnabled(hasProject());
 }

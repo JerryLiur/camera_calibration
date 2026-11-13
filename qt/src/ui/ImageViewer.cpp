@@ -2,6 +2,7 @@
 
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
 
 #include <algorithm>
@@ -11,9 +12,10 @@ namespace ui {
 
 ImageViewer::ImageViewer(QWidget* parent) : QWidget(parent)
 {
-    setMinimumHeight(360);
+    setMinimumHeight(320);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setMouseTracking(true);
-    setStyleSheet(QStringLiteral("background:#1c2431;"));
+    setAccessibleName(QStringLiteral("图像预览"));
 }
 
 void ImageViewer::setImage(const QImage& image)
@@ -27,6 +29,14 @@ void ImageViewer::setPoints(const QVector<QPointF>& points, const QSize& imageSi
 {
     m_points = points;
     m_imageSize = imageSize;
+    update();
+}
+
+void ImageViewer::setEmptyText(const QString& title, const QString& hint)
+{
+    m_emptyTitle = title;
+    m_emptyHint = hint;
+    setAccessibleDescription(title + QStringLiteral("。") + hint);
     update();
 }
 
@@ -60,11 +70,42 @@ QPointF ImageViewer::mapToPixel(const QPoint& position) const
 void ImageViewer::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(QStringLiteral("#1c2431")));
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath viewport;
+    viewport.addRoundedRect(QRectF(rect()), 8, 8);
+    painter.setClipPath(viewport);
+    painter.fillRect(rect(), QColor(QStringLiteral("#101e30")));
     if (m_image.isNull()) {
-        painter.setPen(QColor(QStringLiteral("#9fb0c6")));
-        painter.drawText(rect(), Qt::AlignCenter,
-                         QStringLiteral("导入不同姿态的标定板数据，逐张检查角点"));
+        painter.setPen(QPen(QColor(QStringLiteral("#1b2b40")), 1));
+        for (int x = width() / 2 % 40; x < width(); x += 40)
+            painter.drawLine(x, 0, x, height());
+        for (int y = height() / 2 % 40; y < height(); y += 40)
+            painter.drawLine(0, y, width(), y);
+        const QPointF center(width() / 2.0, height() / 2.0 - 42);
+        const QRectF focus(center.x() - 26, center.y() - 26, 52, 52);
+        painter.setPen(QPen(QColor(QStringLiteral("#89a3c1")), 2, Qt::SolidLine, Qt::RoundCap));
+        const qreal corner = 12;
+        for (const QPointF& point : {focus.topLeft(), focus.topRight(), focus.bottomLeft(), focus.bottomRight()}) {
+            const qreal dx = point.x() < center.x() ? corner : -corner;
+            const qreal dy = point.y() < center.y() ? corner : -corner;
+            painter.drawLine(point, point + QPointF(dx, 0));
+            painter.drawLine(point, point + QPointF(0, dy));
+        }
+        painter.setPen(QPen(QColor(QStringLiteral("#62bfc9")), 1.5));
+        painter.drawLine(center - QPointF(9, 0), center + QPointF(9, 0));
+        painter.drawLine(center - QPointF(0, 9), center + QPointF(0, 9));
+        QFont titleFont = font();
+        titleFont.setPixelSize(16);
+        titleFont.setWeight(QFont::DemiBold);
+        painter.setFont(titleFont);
+        painter.setPen(QColor(QStringLiteral("#e0e8f2")));
+        painter.drawText(QRectF(20, center.y() + 46, width() - 40, 30), Qt::AlignCenter, m_emptyTitle);
+        QFont hintFont = font();
+        hintFont.setPixelSize(12);
+        painter.setFont(hintFont);
+        painter.setPen(QColor(QStringLiteral("#a8b9cc")));
+        painter.drawText(QRectF(24, center.y() + 80, width() - 48, 56),
+                         Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, m_emptyHint);
         return;
     }
     const QRectF target = targetRect();

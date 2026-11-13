@@ -36,8 +36,8 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 REJECT_ON_IMPORT = {"window_limit"}
-REJECT_ON_SOLVE = {"degenerate", "leak"}
-UNSTABLE_SOLVE = {"degenerate_noisy"}
+REJECT_ON_SOLVE = {"degenerate", "degenerate_noisy", "flat_distorted", "leak"}
+UNSTABLE_SOLVE = set()
 LINK_ONLY = {"spike_npy", "packed_dat"}
 
 
@@ -285,7 +285,7 @@ def score(scene_id: str, metrics: dict | None, quality: dict | None,
                 check("拒绝原因指向窗口/元素上限", "时间窗" in text or "一亿" in text, text)]
     if scene_id in REJECT_ON_SOLVE:
         text = solve_rejection or ""
-        keyword = "姿态约束退化" if scene_id == "degenerate" else "相同的角点观测"
+        keyword = "相同的角点观测" if scene_id == "leak" else "姿态约束退化"
         return [check("求解被拒绝", bool(text) and not text.startswith("UNEXPECTED"), text),
                 check(f"拒绝原因包含『{keyword}』", keyword in text, text)]
     if scene_id in LINK_ONLY:
@@ -438,8 +438,8 @@ def summary_text(report: dict) -> str:
             lines.append(f"    {'OK ' if c['passed'] else '!! '}{c['name']}：{c['detail']}")
     lines += ["-" * 78,
               f"总计：{sum(s['passed'] for s in report['scenarios'])}/{len(report['scenarios'])} 个场景符合预期",
-              "说明：PASS 表示软件行为符合该模拟用例的设计预期；degenerate_noisy / flat_distorted / prism",
-              "      的 PASS 恰恰表示测试成功暴露了软件的局限，不代表这些标定结果可用。",
+              "说明：PASS 表示软件行为符合该模拟用例的设计预期；退化场景须被拒绝。",
+              "      prism 的 PASS 表示暴露了模型失配局限，不代表该标定结果可用。",
               "      所有数据来源均为 synthetic，导出包不会认证实机合格。",
               "=" * 78]
     return "\n".join(lines)

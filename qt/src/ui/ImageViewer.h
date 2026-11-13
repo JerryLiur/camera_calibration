@@ -17,6 +17,7 @@ public:
 
     void setImage(const QImage& image);
     void setPoints(const QVector<QPointF>& points, const QSize& imageSize);
+    void setEmptyText(const QString& title, const QString& hint);
     void clear();
 
 signals:
@@ -35,6 +36,8 @@ private:
     QImage m_image;
     QVector<QPointF> m_points;
     QSize m_imageSize;
+    QString m_emptyTitle = QStringLiteral("等待标定图像");
+    QString m_emptyHint = QStringLiteral("导入标定板数据，逐张检查角点与视场覆盖");
 };
 
 } // namespace ui

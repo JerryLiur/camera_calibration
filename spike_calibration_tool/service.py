@@ -11,6 +11,7 @@ import os
 import re
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,6 +52,70 @@ def fingerprint(config):
     return hashlib.sha256(json.dumps(geometry, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
+def validate_project(project):
+    """Validate persisted state before exposing it to the UI or SDK.
+
+    Keep a corrupt project on disk for recovery, but never allow it to poison
+    every project's state endpoint or silently reuse a differently oriented K.
+    """
+    if not isinstance(project, dict):
+        raise ValueError("工程必须为对象")
+    required = {"id", "name", "config", "captures", "model", "validation",
+                "turntable", "revision", "status", "updated_at"}
+    if not required.issubset(project):
+        raise ValueError("工程缺少必要字段")
+    if not isinstance(project["name"], str) or not project["name"].strip() or len(project["name"]) > 120:
+        raise ValueError("工程名称无效")
+    if type(project["revision"]) is not int or project["revision"] < 1:
+        raise ValueError("工程版本无效")
+    if project["status"] not in ("empty", "collecting", "solved", "validated") or not isinstance(project["updated_at"], str):
+        raise ValueError("工程状态无效")
+    project["config"] = engine.validate_config(project["config"])
+    if not isinstance(project["captures"], list) or len(project["captures"]) > 300:
+        raise ValueError("工程观测列表无效")
+    project["captures"] = [engine.validate_capture(c) for c in project["captures"]]
+    if len({c["id"] for c in project["captures"]}) != len(project["captures"]):
+        raise ValueError("工程观测 ID 重复")
+    for key in ("model", "validation", "turntable"):
+        if project[key] is not None and not isinstance(project[key], dict):
+            raise ValueError(f"工程 {key} 无效")
+    model = project["model"]
+    if model is not None:
+        engine._camera(model)
+        if model.get("config_fingerprint") != fingerprint(project["config"]):
+            raise ValueError("内参模型与工程光学/方向配置不一致，请重新标定")
+    elif project["validation"] is not None or project["turntable"] is not None or project["status"] in ("solved", "validated"):
+        raise ValueError("工程缺少结果对应的内参模型")
+    return project
+
+
+@contextmanager
+def project_write_lock(path):
+    """OS-owned lock: serialise revision check and replacement across processes."""
+    with path.open("a+b") as stream:
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ValueError("该工程正在另一窗口保存，请刷新后重试") from exc
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 class Workbench:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -65,8 +130,9 @@ class Workbench:
                     raise ValueError("project identity mismatch")
                 self._check_id(project["id"])
                 dumps(project)
+                validate_project(project)
                 self.projects[project["id"]] = project
-            except (ValueError, KeyError, OSError) as exc:
+            except (ValueError, TypeError, KeyError, OSError) as exc:
                 self.load_errors.append(f"{file.name}: {exc}")
 
     @staticmethod
@@ -79,9 +145,14 @@ class Workbench:
         return copy.deepcopy(self.projects[project_id])
 
     def _save(self, project):
+        with project_write_lock(self.root / (project["id"] + ".py-lock")):
+            return self._save_locked(project)
+
+    def _save_locked(self, project):
         target = self.root / (project["id"] + ".json")
         if target.is_file():
             stored = strict_loads(target.read_text(encoding="utf-8"))
+            validate_project(stored)
             if stored.get("revision") != project["revision"]:
                 self.projects[project["id"]] = stored
                 raise ValueError("该工程已在另一窗口修改，请刷新后重试")

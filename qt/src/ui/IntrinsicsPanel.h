@@ -27,6 +27,7 @@ private:
 
     QPushButton* m_solveButton = nullptr;
     QPushButton* m_validateButton = nullptr;
+    QPushButton* m_queryButton = nullptr;
     QLabel* m_status = nullptr;
     QLabel* m_synthetic = nullptr;
     QTableWidget* m_matrix = nullptr;

@@ -132,6 +132,10 @@ bool FileCameraDevice::grab(DeviceFrame& frame, int, QString* error)
         if (error) *error = QStringLiteral("无法读取 %1").arg(path);
         return false;
     }
+    if (file.size() <= 0 || file.size() > 64 * 1024 * 1024) {
+        if (error) *error = QStringLiteral("回放文件为空或超过64MiB导入限制");
+        return false;
+    }
     const QByteArray bytes = file.readAll();
     const QString suffix = QStringLiteral(".") + QFileInfo(path).suffix().toLower();
     try {

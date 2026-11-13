@@ -49,6 +49,7 @@ DeviceWorker::DeviceWorker(QObject* parent) : QObject(parent) {}
 
 bool DeviceWorker::grabInternal(bool still, QString* error)
 {
+    try {
     if (!m_device || !m_device->isOpen()) {
         if (error) *error = QStringLiteral("设备尚未连接");
         return false;
@@ -56,13 +57,12 @@ bool DeviceWorker::grabInternal(bool still, QString* error)
     DeviceFrame frame;
     QString message;
     if (!m_device->grab(frame, still ? 2000 : 100, &message)) {
-        if (!message.isEmpty()) emit errorOccurred(message);
-        if (error) *error = message;
+        if (error) *error = message.isEmpty() && still ? QStringLiteral("采集超时，请检查设备或触发信号") : message;
         return false;
     }
     const QImage image = toQImage(frame.image);
     if (image.isNull()) {
-        emit errorOccurred(QStringLiteral("不支持的帧格式"));
+        if (error) *error = QStringLiteral("不支持的帧格式");
         return false;
     }
     const QString source = frame.metadata.value(QStringLiteral("source")).toString();
@@ -70,7 +70,7 @@ bool DeviceWorker::grabInternal(bool still, QString* error)
     if (still) {
         std::vector<uchar> buffer;
         if (!cv::imencode(".png", frame.image, buffer)) {
-            emit errorOccurred(QStringLiteral("无法编码采集帧"));
+            if (error) *error = QStringLiteral("无法编码采集帧");
             return false;
         }
         const QString name = QStringLiteral("device_%1_%2.png")
@@ -81,37 +81,55 @@ bool DeviceWorker::grabInternal(bool still, QString* error)
                            name, source);
     }
     return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = QStringLiteral("设备采集异常：%1").arg(QString::fromUtf8(exception.what()));
+    } catch (...) {
+        if (error) *error = QStringLiteral("设备采集发生未知异常");
+    }
+    return false;
 }
 
 void DeviceWorker::openDevice(const QString& backend, const QVariantMap& parameters)
 {
     stopStream();
     try {
-        m_device = createCameraDevice(backend);
-    } catch (const std::exception& exception) {
-        emit opened(false, QString::fromUtf8(exception.what()), QVariantMap());
-        return;
-    }
-    QString message;
-    const bool ok = m_device->open(parameters, &message);
-    if (!ok) {
+        if (m_device) m_device->close();
         m_device.reset();
-        emit opened(false, message, QVariantMap());
-        return;
+        m_device = createCameraDevice(backend);
+        QString message;
+        const bool ok = m_device->open(parameters, &message);
+        if (!ok) {
+            m_device.reset();
+            emit opened(false, message, QVariantMap());
+            return;
+        }
+        emit opened(true, message, m_device->parameters());
+    } catch (const std::exception& exception) {
+        m_device.reset();
+        emit opened(false, QString::fromUtf8(exception.what()), QVariantMap());
+    } catch (...) {
+        m_device.reset();
+        emit opened(false, QStringLiteral("设备连接发生未知异常"), QVariantMap());
     }
-    emit opened(true, message, m_device->parameters());
 }
 
 void DeviceWorker::closeDevice()
 {
     stopStream();
-    if (m_device) m_device->close();
+    try {
+        if (m_device) m_device->close();
+    } catch (const std::exception& exception) {
+        emit errorOccurred(QString::fromUtf8(exception.what()));
+    } catch (...) {
+        emit errorOccurred(QStringLiteral("设备断开发生未知异常"));
+    }
     m_device.reset();
     emit closed(QStringLiteral("设备已断开"));
 }
 
 void DeviceWorker::setParameter(const QString& key, const QVariant& value)
 {
+    try {
     if (!m_device || !m_device->isOpen()) {
         emit errorOccurred(QStringLiteral("设备尚未连接"));
         return;
@@ -122,6 +140,11 @@ void DeviceWorker::setParameter(const QString& key, const QVariant& value)
         return;
     }
     emit parametersChanged(m_device->parameters());
+    } catch (const std::exception& exception) {
+        emit errorOccurred(QString::fromUtf8(exception.what()));
+    } catch (...) {
+        emit errorOccurred(QStringLiteral("设备参数设置发生未知异常"));
+    }
 }
 
 void DeviceWorker::startStream(int intervalMs)
@@ -131,13 +154,19 @@ void DeviceWorker::startStream(int intervalMs)
         m_timer->setTimerType(Qt::PreciseTimer);
         connect(m_timer, &QTimer::timeout, this, [this] {
             QString error;
-            grabInternal(false, &error);
+            if (!grabInternal(false, &error) && !error.isEmpty()) {
+                stopStream();
+                emit errorOccurred(error);
+            }
         });
     }
     m_timer->setInterval(std::max(10, intervalMs));
     m_timer->start();
     QString error;
-    grabInternal(false, &error);
+    if (!grabInternal(false, &error) && !error.isEmpty()) {
+        stopStream();
+        emit errorOccurred(error);
+    }
 }
 
 void DeviceWorker::stopStream()

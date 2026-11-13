@@ -11,7 +11,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMessageBox>
+#include <QScrollArea>
 #include <QSplitter>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -23,23 +25,34 @@ CapturePanel::CapturePanel(Workbench* workbench, QWidget* parent)
     : ProjectPanel(workbench, parent)
 {
     auto* root = new QHBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(16);
     auto* splitter = new QSplitter(Qt::Horizontal, this);
+    splitter->setChildrenCollapsible(false);
+    splitter->setHandleWidth(12);
     root->addWidget(splitter);
 
     auto* left = new QWidget(this);
     auto* leftLayout = new QVBoxLayout(left);
+    leftLayout->setContentsMargins(0, 0, 8, 0);
+    leftLayout->setSpacing(12);
     m_filename = new QLabel(QStringLiteral("图像与角点"), left);
+    m_filename->setWordWrap(true);
+    m_filename->setMinimumWidth(0);
+    m_filename->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_filename->setStyleSheet(QStringLiteral("font-weight:600;"));
     auto* controls = new QHBoxLayout();
     m_undistort = new QCheckBox(QStringLiteral("去畸变预览"), left);
-    controls->addWidget(m_filename);
-    controls->addStretch(1);
+    controls->addWidget(m_filename, 1);
     controls->addWidget(m_undistort);
     leftLayout->addLayout(controls);
     m_viewer = new ImageViewer(left);
+    m_viewer->setAccessibleName(QStringLiteral("标定图像与角点预览"));
     leftLayout->addWidget(m_viewer, 1);
     m_pointer = new QLabel(QStringLiteral("u → 右 ／ v → 下"), left);
     m_ray = new QLabel(QStringLiteral("内参求解后可点击图像查询视线"), left);
+    m_pointer->setWordWrap(true);
+    m_ray->setWordWrap(true);
     m_pointer->setStyleSheet(QStringLiteral("color:#536177;"));
     m_ray->setStyleSheet(QStringLiteral("color:#536177;"));
     leftLayout->addWidget(m_pointer);
@@ -48,28 +61,46 @@ CapturePanel::CapturePanel(Workbench* workbench, QWidget* parent)
 
     auto* right = new QWidget(this);
     auto* rightLayout = new QVBoxLayout(right);
+    rightLayout->setContentsMargins(8, 0, 8, 0);
+    rightLayout->setSpacing(12);
     auto* heading = new QHBoxLayout();
     m_counts = new QLabel(QStringLiteral("0 训练 · 0 验证"), right);
     m_counts->setStyleSheet(QStringLiteral("font-weight:600;"));
+    m_counts->setWordWrap(true);
     m_solveButton = makeButton(QStringLiteral("求解内参"), right, true);
     auto* demoButton = makeButton(QStringLiteral("加载合成示例"), right);
-    heading->addWidget(m_counts);
+    rightLayout->addWidget(m_counts);
     heading->addStretch(1);
     heading->addWidget(demoButton);
     heading->addWidget(m_solveButton);
     rightLayout->addLayout(heading);
 
     m_table = new QTableWidget(0, 4, right);
+    m_table->setAccessibleName(QStringLiteral("标定观测列表"));
     m_table->setHorizontalHeaderLabels({QStringLiteral("参与"), QStringLiteral("图像 / 采集序列"),
                                         QStringLiteral("用途"), QStringLiteral("角点")});
     m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
+    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    m_table->setColumnWidth(0, 48);
+    m_table->setColumnWidth(2, 94);
+    m_table->setColumnWidth(3, 62);
+    m_table->verticalHeader()->hide();
+    m_table->verticalHeader()->setDefaultSectionSize(52);
+    m_table->setAlternatingRowColors(true);
+    m_table->setShowGrid(false);
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setTextElideMode(Qt::ElideMiddle);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setMinimumHeight(200);
     m_table->setMaximumHeight(260);
     rightLayout->addWidget(m_table);
 
     auto* coverage = new QHBoxLayout();
     m_coverageLabel = new QLabel(QStringLiteral("训练视场覆盖 0%"), right);
+    m_coverageLabel->setWordWrap(true);
     m_coverageGrid = new QWidget(right);
     auto* grid = new QGridLayout(m_coverageGrid);
     grid->setSpacing(2);
@@ -85,10 +116,17 @@ CapturePanel::CapturePanel(Workbench* workbench, QWidget* parent)
     coverage->addStretch(1);
     coverage->addWidget(m_coverageGrid);
     rightLayout->addLayout(coverage);
-    rightLayout->addWidget(new QLabel(QStringLiteral("验证必须来自独立采集序列，同一序列不能同时用于训练与验证。"), right));
+    auto* splitHelp = new QLabel(QStringLiteral("验证请使用独立采集序列；同一序列不能同时用于训练与验证。"), right);
+    splitHelp->setWordWrap(true);
+    splitHelp->setStyleSheet(QStringLiteral("color:#536177;"));
+    rightLayout->addWidget(splitHelp);
 
     auto* importGroup = makeGroup(QStringLiteral("导入采集数据"), right);
     auto* form = new QFormLayout(importGroup);
+    form->setContentsMargins(16, 20, 16, 16);
+    form->setHorizontalSpacing(12);
+    form->setVerticalSpacing(10);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_sequence = new QLineEdit(importGroup);
     m_sequence->setPlaceholderText(QStringLiteral("例如 capture-fit-01"));
     m_split = new QComboBox(importGroup);
@@ -97,6 +135,7 @@ CapturePanel::CapturePanel(Workbench* workbench, QWidget* parent)
     m_evidence = new QComboBox(importGroup);
     m_evidence->addItem(QStringLiteral("本机相机实采"), QStringLiteral("hardware"));
     m_evidence->addItem(QStringLiteral("公开数据"), QStringLiteral("public"));
+    m_evidence->addItem(QStringLiteral("合成测试数据"), QStringLiteral("synthetic"));
     auto* fileRow = new QHBoxLayout();
     auto* choose = makeButton(QStringLiteral("选择文件…"), importGroup);
     m_fileSummary = new QLabel(QStringLiteral("尚未选择文件"), importGroup);
@@ -106,11 +145,17 @@ CapturePanel::CapturePanel(Workbench* workbench, QWidget* parent)
     addRow(form, QStringLiteral("数据用途"), m_split);
     addRow(form, QStringLiteral("数据来源"), m_evidence);
     form->addRow(QStringLiteral("文件"), fileRow);
-    auto* importButton = makeButton(QStringLiteral("导入所选文件 / 角点 JSON"), importGroup, true);
-    form->addRow(QString(), importButton);
+    auto* importButton = makeButton(QStringLiteral("导入所选数据"), importGroup);
+    importButton->setToolTip(QStringLiteral("支持图像、Spike NPY / DAT / BIN 及角点 JSON"));
+    form->addRow(importButton);
 
     auto* spikeGroup = makeGroup(QStringLiteral("Spike 重建窗口与 DAT 布局"), right);
+    spikeGroup->setObjectName(QStringLiteral("captureAdvancedGroup"));
     auto* spikeForm = new QFormLayout(spikeGroup);
+    spikeForm->setContentsMargins(16, 20, 16, 16);
+    spikeForm->setHorizontalSpacing(12);
+    spikeForm->setVerticalSpacing(10);
+    spikeForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_method = new QComboBox(spikeGroup);
     m_method->addItem(QStringLiteral("窗口计数 / TFP"), QStringLiteral("count"));
     m_method->addItem(QStringLiteral("脉冲间隔统计"), QStringLiteral("interval"));
@@ -143,9 +188,35 @@ CapturePanel::CapturePanel(Workbench* workbench, QWidget* parent)
     addRow(spikeForm, QStringLiteral("文件头字节"), m_datHeader);
     addRow(spikeForm, QStringLiteral("帧步长字节"), m_datStride);
     rightLayout->addWidget(importGroup);
+    auto* advancedToggle = new QToolButton(right);
+    advancedToggle->setObjectName(QStringLiteral("captureAdvancedToggle"));
+    advancedToggle->setText(QStringLiteral("Spike / DAT 高级参数"));
+    advancedToggle->setAccessibleName(QStringLiteral("展开 Spike 重建与 DAT 布局参数"));
+    advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    advancedToggle->setArrowType(Qt::RightArrow);
+    advancedToggle->setCheckable(true);
+    advancedToggle->setFocusPolicy(Qt::StrongFocus);
+    advancedToggle->setMinimumHeight(36);
+    advancedToggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    advancedToggle->setToolTip(QStringLiteral("导入 Spike 文件或配置设备回放时展开；普通图像和角点 JSON 无需设置。"));
+    rightLayout->addWidget(advancedToggle);
     rightLayout->addWidget(spikeGroup);
+    spikeGroup->hide();
+    connect(advancedToggle, &QToolButton::toggled, this, [spikeGroup, advancedToggle](bool expanded) {
+        spikeGroup->setVisible(expanded);
+        advancedToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        advancedToggle->setAccessibleName(expanded ? QStringLiteral("收起 Spike 重建与 DAT 布局参数")
+                                                 : QStringLiteral("展开 Spike 重建与 DAT 布局参数"));
+    });
     rightLayout->addStretch(1);
-    splitter->addWidget(right);
+    auto* settingsScroll = new QScrollArea(this);
+    settingsScroll->setObjectName(QStringLiteral("captureSettingsScroll"));
+    settingsScroll->setFrameShape(QFrame::NoFrame);
+    settingsScroll->setWidgetResizable(true);
+    settingsScroll->setMinimumWidth(410);
+    settingsScroll->setWidget(right);
+    splitter->addWidget(settingsScroll);
+    splitter->setSizes({760, 480});
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
@@ -191,6 +262,10 @@ QJsonObject CapturePanel::options() const
 
 void CapturePanel::setProject(const QJsonObject& project)
 {
+    if (project.value(QStringLiteral("id")) != m_project.value(QStringLiteral("id"))
+        || project.value(QStringLiteral("model")) != m_project.value(QStringLiteral("model"))) {
+        m_ray->setText(QStringLiteral("内参求解后可点击图像查询视线"));
+    }
     m_project = project;
     refreshTable();
     refreshViewer();
@@ -211,7 +286,9 @@ void CapturePanel::refreshTable()
     }
     m_counts->setText(QStringLiteral("%1 训练 · %2 验证 · %3 未检出").arg(train).arg(test).arg(failed));
     m_solveButton->setEnabled(hasProject() && train >= 6);
-    m_undistort->setEnabled(!m_project.value(QStringLiteral("model")).isNull());
+    const bool solved = !m_project.value(QStringLiteral("model")).toObject().isEmpty();
+    m_undistort->setEnabled(solved);
+    if (!solved) m_undistort->setChecked(false);
 
     m_table->blockSignals(true);
     m_table->setRowCount(static_cast<int>(captures.size()));
@@ -226,6 +303,7 @@ void CapturePanel::refreshTable()
         auto* name = new QTableWidgetItem(capture.value(QStringLiteral("name")).toString()
                                           + QStringLiteral("\n")
                                           + capture.value(QStringLiteral("sequence_id")).toString());
+        name->setToolTip(name->text());
         name->setData(Qt::UserRole, id);
         m_table->setItem(row, 1, name);
         auto* split = new QComboBox(m_table);
@@ -274,13 +352,10 @@ void CapturePanel::refreshViewer()
         QImage image;
         image.loadFromData(png, "PNG");
         m_viewer->setImage(image);
-        QVector<QPointF> points;
-        for (const QJsonValue& item : selected.value(QStringLiteral("image_points")).toArray()) {
-            const QJsonArray point = item.toArray();
-            points.append(QPointF(point.at(0).toDouble(), point.at(1).toDouble()));
-        }
         const QJsonArray size = selected.value(QStringLiteral("image_size")).toArray();
-        m_viewer->setPoints(points, QSize(size.at(0).toInt(), size.at(1).toInt()));
+        // Workbench::preview already renders corners in the displayed coordinate
+        // domain, including undistortion. Raw overlays would misalign that view.
+        m_viewer->setPoints({}, QSize(size.at(0).toInt(), size.at(1).toInt()));
         m_filename->setText(QStringLiteral("%1 · %2 · %3")
                                 .arg(selected.value(QStringLiteral("name")).toString(),
                                      selected.value(QStringLiteral("sequence_id")).toString(),
@@ -330,9 +405,8 @@ void CapturePanel::refreshCoverage()
 void CapturePanel::onDemo()
 {
     if (!m_project.value(QStringLiteral("captures")).toArray().isEmpty()) {
-        if (QMessageBox::question(this, QStringLiteral("加载合成示例"),
-                                  QStringLiteral("建议在独立工程中体验。当前工程的采集与结果会失效，继续？"))
-            != QMessageBox::Yes) return;
+        emit notify(QStringLiteral("请新建空工程加载合成示例，以保留已有观测。"), true);
+        return;
     }
     run(QStringLiteral("正在生成合成多姿态示例…"), [this] {
         m_workbench->loadDemo(projectId());
@@ -343,10 +417,9 @@ void CapturePanel::onDemo()
 
 void CapturePanel::onSolve()
 {
-    run(QStringLiteral("正在求解 Spike 内参…"), [this] {
-        m_workbench->solve(projectId());
-        emit notify(QStringLiteral("Spike 内参已求解，请继续使用独立采集序列验证。"));
-    });
+    runBackground(QStringLiteral("正在求解 Spike 内参…"), [workbench = m_workbench, id = projectId()] {
+        workbench->solve(id);
+    }, QStringLiteral("Spike 内参已求解，请继续使用独立采集序列验证。"));
 }
 
 void CapturePanel::onChooseFiles()
@@ -363,7 +436,15 @@ void CapturePanel::onImport()
 {
     if (m_files.isEmpty()) { emit notify(QStringLiteral("请先选择文件。"), true); return; }
     if (!hasProject()) { emit notify(QStringLiteral("请先新建工程。"), true); return; }
-    run(QStringLiteral("正在读取数据并检测角点…"), [this] {
+    try {
+        qint64 totalBytes = 0;
+        if (m_files.size() > 100) fail(QStringLiteral("每批最多选择 100 个文件。"));
+        for (const QString& path : m_files) {
+            totalBytes += QFileInfo(path).size();
+            if (totalBytes > 64LL * 1024 * 1024) {
+                fail(QStringLiteral("每批文件合计不能超过 64 MiB，请分批导入。"));
+            }
+        }
         const QString sequence = m_sequence->text().trimmed();
         if (sequence.isEmpty()) fail(QStringLiteral("请填写采集序列 ID。"));
         const QString split = m_split->currentData().toString();
@@ -403,7 +484,10 @@ void CapturePanel::onImport()
                     captures.append(capture);
                 }
             }
-            m_workbench->importObservations(projectId(), captures);
+            if (!runBackground(QStringLiteral("正在导入角点观测…"),
+                               [workbench = m_workbench, id = projectId(), captures] {
+                workbench->importObservations(id, captures);
+            }, QStringLiteral("角点观测已导入。"))) return;
         } else {
             QJsonArray files;
             for (const QString& path : m_files) {
@@ -415,13 +499,19 @@ void CapturePanel::onImport()
                               QString::fromLatin1(file.readAll().toBase64()));
                 files.append(record);
             }
-            m_workbench->importFiles(projectId(), files, split, sequence, evidence, options());
+            const QJsonObject importOptions = options();
+            if (!runBackground(QStringLiteral("正在重建数据并检测角点…"),
+                               [workbench = m_workbench, id = projectId(), files, split, sequence, evidence, importOptions] {
+                workbench->importFiles(id, files, split, sequence, evidence, importOptions);
+            }, QStringLiteral("图像 / Spike 数据已导入。"))) return;
         }
         m_files.clear();
         m_fileSummary->setText(QStringLiteral("尚未选择文件"));
         m_selectedId.clear();
         emit notify(QStringLiteral("数据已导入，请检查角点、用途划分与视场覆盖。"));
-    });
+    } catch (const std::exception& error) {
+        emit notify(QString::fromUtf8(error.what()), true);
+    }
 }
 
 void CapturePanel::onCellChanged(int row, int column)
@@ -430,12 +520,12 @@ void CapturePanel::onCellChanged(int row, int column)
     const QTableWidgetItem* name = m_table->item(row, 1);
     if (!name) return;
     auto* check = m_table->item(row, 0);
-    run(QStringLiteral("正在更新观测用途…"), [this, id = name->data(Qt::UserRole).toString(),
+    if (!run(QStringLiteral("正在更新观测用途…"), [this, id = name->data(Qt::UserRole).toString(),
                                               enabled = check->checkState() == Qt::Checked] {
         QJsonObject body;
         body.insert(QStringLiteral("enabled"), enabled);
         m_workbench->updateCapture(projectId(), id, body);
-    });
+    })) refreshTable();
 }
 
 void CapturePanel::onSplitChanged(int index)
@@ -445,22 +535,27 @@ void CapturePanel::onSplitChanged(int index)
     if (!combo) return;
     const QString id = combo->property("captureId").toString();
     const QString split = combo->itemData(index).toString();
-    run(QStringLiteral("正在更新观测用途…"), [this, id, split] {
+    if (!run(QStringLiteral("正在更新观测用途…"), [this, id, split] {
         QJsonObject body;
         body.insert(QStringLiteral("split"), split);
         m_workbench->updateCapture(projectId(), id, body);
-    });
+    })) refreshTable();
 }
 
 void CapturePanel::onSelectCapture(int row, int)
 {
+    m_ray->setText(QStringLiteral("内参求解后可点击图像查询视线"));
     const QTableWidgetItem* item = m_table->item(row, 1);
     if (!item) return;
     m_selectedId = item->data(Qt::UserRole).toString();
     refreshViewer();
 }
 
-void CapturePanel::onUndistortChanged() { refreshViewer(); }
+void CapturePanel::onUndistortChanged()
+{
+    m_ray->setText(QStringLiteral("内参求解后可点击图像查询视线"));
+    refreshViewer();
+}
 
 void CapturePanel::onPixelHovered(const QPointF& pixel)
 {
@@ -469,6 +564,7 @@ void CapturePanel::onPixelHovered(const QPointF& pixel)
 
 void CapturePanel::onPixelClicked(const QPointF& pixel)
 {
+    m_ray->setText(QStringLiteral("内参求解后可点击图像查询视线"));
     if (m_project.value(QStringLiteral("model")).isNull()) {
         emit notify(QStringLiteral("请先完成内参求解，再点击图像查询视线。"), true);
         return;

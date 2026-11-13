@@ -21,12 +21,14 @@ QString fmt(double value, int precision = 4);
 QString pretty(const QJsonValue& value);
 QString statusText(const QString& status);
 QString evidenceText(const QString& evidence);
+QString workbenchStyleSheet();
 QPushButton* makeButton(const QString& text, QWidget* parent, bool primary = false);
 QGroupBox* makeGroup(const QString& title, QWidget* parent);
 void addRow(QFormLayout* layout, const QString& label, QWidget* field);
 QJsonValue lineToOptionalNumber(QLineEdit* field, const QString& name);
 double lineToNumber(QLineEdit* field, const QString& name);
 int lineToInt(QLineEdit* field, const QString& name);
+void saveFileAtomically(const QString& path, const QByteArray& data);
 
 class ProjectPanel : public QWidget {
     Q_OBJECT
@@ -42,7 +44,9 @@ signals:
     void deviceConnectionChanged(bool connected);
 
 protected:
-    void run(const QString& busyMessage, const std::function<void()>& action);
+    bool run(const QString& busyMessage, const std::function<void()>& action);
+    bool runBackground(const QString& busyMessage, const std::function<void()>& action,
+                       const QString& completedMessage);
     QString projectId() const { return m_project.value(QStringLiteral("id")).toString(); }
     bool hasProject() const { return !projectId().isEmpty(); }
 

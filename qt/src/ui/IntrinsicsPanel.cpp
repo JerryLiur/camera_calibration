@@ -6,6 +6,7 @@
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QPushButton>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace spike {
@@ -29,20 +30,28 @@ IntrinsicsPanel::IntrinsicsPanel(Workbench* workbench, QWidget* parent)
     root->addLayout(heading);
 
     auto* columns = new QHBoxLayout();
+    columns->setSpacing(16);
     auto* left = new QVBoxLayout();
+    left->setSpacing(16);
     auto* modelGroup = makeGroup(QStringLiteral("Spike 成像模型"), this);
     auto* modelLayout = new QVBoxLayout(modelGroup);
     m_matrix = new QTableWidget(3, 3, modelGroup);
     m_matrix->horizontalHeader()->hide();
     m_matrix->verticalHeader()->hide();
     m_matrix->setMaximumHeight(120);
+    m_matrix->setMinimumHeight(110);
+    m_matrix->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_matrix->verticalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_matrix->setEditTriggers(QAbstractItemView::NoEditTriggers);
     modelLayout->addWidget(new QLabel(QStringLiteral("相机内参 K"), modelGroup));
     modelLayout->addWidget(m_matrix);
     m_distortion = new QTableWidget(0, 2, modelGroup);
     m_distortion->setHorizontalHeaderLabels({QStringLiteral("参数"), QStringLiteral("值")});
     m_distortion->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_distortion->setMaximumHeight(180);
+    m_distortion->setMinimumHeight(200);
+    m_distortion->setMaximumHeight(210);
+    m_distortion->verticalHeader()->hide();
+    m_distortion->verticalHeader()->setDefaultSectionSize(32);
     m_distortion->setEditTriggers(QAbstractItemView::NoEditTriggers);
     modelLayout->addWidget(new QLabel(QStringLiteral("完整支路畸变参数"), modelGroup));
     modelLayout->addWidget(m_distortion);
@@ -59,16 +68,21 @@ IntrinsicsPanel::IntrinsicsPanel(Workbench* workbench, QWidget* parent)
     m_perView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_perView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_perView->setMaximumHeight(220);
+    m_perView->setMinimumHeight(150);
+    m_perView->verticalHeader()->hide();
+    m_perView->verticalHeader()->setDefaultSectionSize(32);
     perViewLayout->addWidget(m_perView);
     left->addWidget(perViewGroup);
     columns->addLayout(left, 3);
 
     auto* right = new QVBoxLayout();
+    right->setSpacing(16);
     auto* validationGroup = makeGroup(QStringLiteral("独立验证（冻结内参）"), this);
     auto* validationLayout = new QVBoxLayout(validationGroup);
     m_validationStatus = new QLabel(QStringLiteral("等待独立验证"), validationGroup);
     m_validationStatus->setStyleSheet(QStringLiteral("font-weight:600;"));
     m_validationStats = new QLabel(QStringLiteral("—"), validationGroup);
+    m_validationStats->setWordWrap(true);
     m_validationNote = new QLabel(
         QStringLiteral("使用未参与求解的独立序列，固定内参计算重投影残差。未设置阈值时只报告测量值。"),
         validationGroup);
@@ -83,12 +97,14 @@ IntrinsicsPanel::IntrinsicsPanel(Workbench* workbench, QWidget* parent)
     auto* queryForm = new QFormLayout(queryGroup);
     m_queryU = new QLineEdit(queryGroup);
     m_queryV = new QLineEdit(queryGroup);
+    m_queryU->setObjectName(QStringLiteral("queryU"));
+    m_queryV->setObjectName(QStringLiteral("queryV"));
     m_queryEncoder = new QLineEdit(QStringLiteral("0"), queryGroup);
     addRow(queryForm, QStringLiteral("u / px"), m_queryU);
     addRow(queryForm, QStringLiteral("v / px"), m_queryV);
     addRow(queryForm, QStringLiteral("转台编码角 / °"), m_queryEncoder);
-    auto* queryButton = makeButton(QStringLiteral("计算视线"), queryGroup);
-    queryForm->addRow(QString(), queryButton);
+    m_queryButton = makeButton(QStringLiteral("计算视线"), queryGroup);
+    queryForm->addRow(QString(), m_queryButton);
     m_queryResult = new QLabel(QStringLiteral("方位右正 · 俯仰上正"), queryGroup);
     m_queryResult->setWordWrap(true);
     queryForm->addRow(m_queryResult);
@@ -101,17 +117,47 @@ IntrinsicsPanel::IntrinsicsPanel(Workbench* workbench, QWidget* parent)
     m_modelJson->setMinimumHeight(200);
     m_modelJson->setStyleSheet(QStringLiteral("font-family:Consolas,monospace;font-size:12px;"));
     detailLayout->addWidget(m_modelJson);
+    auto* detailsToggle = new QToolButton(this);
+    detailsToggle->setObjectName(QStringLiteral("modelDetailsToggle"));
+    detailsToggle->setText(QStringLiteral("完整模型与诊断"));
+    detailsToggle->setCheckable(true);
+    detailsToggle->setArrowType(Qt::RightArrow);
+    detailsToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    detailsToggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    detailsToggle->setMinimumHeight(36);
+    detailsToggle->setAccessibleName(QStringLiteral("展开完整模型与诊断"));
+    detailGroup->hide();
+    connect(detailsToggle, &QToolButton::toggled, this, [detailsToggle, detailGroup](bool expanded) {
+        detailGroup->setVisible(expanded);
+        detailsToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        detailsToggle->setAccessibleName(expanded ? QStringLiteral("收起完整模型与诊断")
+                                                 : QStringLiteral("展开完整模型与诊断"));
+    });
+    right->addWidget(detailsToggle);
     right->addWidget(detailGroup);
+    right->addStretch(1);
     columns->addLayout(right, 2);
     root->addLayout(columns);
 
     connect(m_solveButton, &QPushButton::clicked, this, &IntrinsicsPanel::onSolve);
     connect(m_validateButton, &QPushButton::clicked, this, &IntrinsicsPanel::onValidate);
-    connect(queryButton, &QPushButton::clicked, this, &IntrinsicsPanel::onQuery);
+    connect(m_queryButton, &QPushButton::clicked, this, &IntrinsicsPanel::onQuery);
+    for (QLineEdit* field : {m_queryU, m_queryV, m_queryEncoder}) {
+        connect(field, &QLineEdit::textChanged, this, [this] {
+            m_queryResult->setText(QStringLiteral("方位右正 · 俯仰上正"));
+        });
+    }
 }
 
 void IntrinsicsPanel::setProject(const QJsonObject& project)
 {
+    if (project.value(QStringLiteral("id")) != m_project.value(QStringLiteral("id"))
+        || project.value(QStringLiteral("model")) != m_project.value(QStringLiteral("model"))
+        || project.value(QStringLiteral("turntable")) != m_project.value(QStringLiteral("turntable"))) {
+        m_queryResult->setText(QStringLiteral("方位右正 · 俯仰上正"));
+        m_queryU->clear();
+        m_queryV->clear();
+    }
     m_project = project;
     refreshModel();
     refreshValidation();
@@ -121,6 +167,7 @@ void IntrinsicsPanel::refreshModel()
 {
     const QJsonObject model = m_project.value(QStringLiteral("model")).toObject();
     const bool solved = !model.isEmpty();
+    m_queryButton->setEnabled(solved);
     int train = 0, test = 0;
     for (const QJsonValue& item : m_project.value(QStringLiteral("captures")).toArray()) {
         const QJsonObject capture = item.toObject();
@@ -142,7 +189,7 @@ void IntrinsicsPanel::refreshModel()
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
             const double value = K.at(r).toArray().at(c).toDouble();
-            m_matrix->setItem(r, c, new QTableWidgetItem(fmt(value, 5)));
+            m_matrix->setItem(r, c, new QTableWidgetItem(solved ? fmt(value, 5) : QStringLiteral("—")));
         }
     }
     const QStringList terms = {QStringLiteral("k₁"), QStringLiteral("k₂"), QStringLiteral("p₁"),
@@ -202,24 +249,21 @@ void IntrinsicsPanel::refreshValidation()
 
 void IntrinsicsPanel::onSolve()
 {
-    run(QStringLiteral("正在求解 Spike 内参…"), [this] {
-        m_workbench->solve(projectId());
-        emit notify(QStringLiteral("Spike 内参已求解。"));
-    });
+    runBackground(QStringLiteral("正在求解 Spike 内参…"), [workbench = m_workbench, id = projectId()] {
+        workbench->solve(id);
+    }, QStringLiteral("Spike 内参已求解。"));
 }
 
 void IntrinsicsPanel::onValidate()
 {
-    run(QStringLiteral("正在使用独立序列验证…"), [this] {
-        const QJsonObject project = m_workbench->validate(projectId());
-        emit notify(QStringLiteral("独立验证完成：%1")
-                        .arg(statusText(project.value(QStringLiteral("validation")).toObject()
-                                            .value(QStringLiteral("status")).toString())));
-    });
+    runBackground(QStringLiteral("正在使用独立序列验证…"), [workbench = m_workbench, id = projectId()] {
+        workbench->validate(id);
+    }, QStringLiteral("独立验证完成，请查看实测值与阈值判定。"));
 }
 
 void IntrinsicsPanel::onQuery()
 {
+    m_queryResult->setText(QStringLiteral("方位右正 · 俯仰上正"));
     run(QStringLiteral("正在计算视线…"), [this] {
         const double u = lineToNumber(m_queryU, QStringLiteral("u"));
         const double v = lineToNumber(m_queryV, QStringLiteral("v"));

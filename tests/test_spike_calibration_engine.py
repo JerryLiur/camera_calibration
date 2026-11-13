@@ -3,6 +3,7 @@ import base64
 import copy
 import io
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -65,9 +66,16 @@ class SpikeCalibrationEngineTests(unittest.TestCase):
                 points = np.asarray(capture["image_points"])
                 points[:,0] += 2*np.sin(np.arange(len(points)))
                 capture["image_points"] = points.tolist()
-        refit = solve_intrinsics(other, self.config)
-        np.testing.assert_allclose(refit["K"], self.model["K"], rtol=0, atol=1e-8)
-        np.testing.assert_allclose(refit["distortion"], self.model["distortion"], rtol=0, atol=1e-8)
+        from spike_calibration_tool.engine import fit_camera_intrinsics
+        with patch("spike_calibration_tool.engine.fit_camera_intrinsics", wraps=fit_camera_intrinsics) as fit:
+            refit = solve_intrinsics(other, self.config)
+        train = [c for c in self.captures if c["split"] == "train"]
+        self.assertEqual(fit.call_args.args[0], [c["object_points"] for c in train])
+        self.assertEqual(fit.call_args.args[1], [c["image_points"] for c in train])
+        # OpenCV parallel reductions can differ below a millionth of a pixel;
+        # exact solver inputs above prove that holdout data never enters fitting.
+        np.testing.assert_allclose(refit["K"], self.model["K"], rtol=0, atol=1e-5)
+        np.testing.assert_allclose(refit["distortion"], self.model["distortion"], rtol=0, atol=1e-6)
 
     def test_independent_validation_freezes_model_and_no_implicit_pass(self):
         original = copy.deepcopy(self.model)
@@ -115,6 +123,24 @@ class SpikeCalibrationEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重叠"):
             validate_intrinsics(self.model,[test],self.config)
 
+    def test_frontal_poses_with_noise_or_distortion_do_not_produce_false_model(self):
+        from scripts.generate_mock_calibration_data import make_pose, capture, OBJ, SEED
+        rng = np.random.default_rng(SEED)
+        # Match the independent fixture's noise, without requiring generated files.
+        tilted = [make_pose(rng, i) for i in range(32)]
+        noise = [rng.normal(0, .04, (len(OBJ), 2)) for _ in tilted]
+        for distortion in (np.zeros(5), None):
+            with self.subTest(distortion=distortion):
+                caps = []
+                for i in range(24):
+                    pose = make_pose(rng, i, front_facing=True, distortion=distortion)
+                    c = capture(f"flat-{i}", f"flat-seq-{i}", "train",
+                                np.asarray(pose["image_points_truth"]) + noise[i], None)
+                    c["id"] = str(i)
+                    caps.append(c)
+                with self.assertRaisesRegex(ValueError, "姿态约束退化"):
+                    solve_intrinsics(caps, self.config)
+
     def test_missing_validation_rejected(self):
         with self.assertRaisesRegex(ValueError, "验证"):
             validate_intrinsics(self.model,self.captures[:12],self.config)
@@ -145,6 +171,22 @@ class SpikeCalibrationEngineTests(unittest.TestCase):
         self.assertAlmostEqual(model["K"][0][0],610,delta=3.)
         self.assertAlmostEqual(model["K"][1][1],620,delta=3.)
         self.assertLess(validate_intrinsics(model,captures,config)["p95_px"], .15)
+
+    def test_circle_targets_and_image_encodings(self):
+        for kind, cols, rows in (("circles", 7, 5), ("asymmetric_circles", 4, 11)):
+            image = np.full((600, 700), 255, np.uint8)
+            for row in range(rows):
+                for col in range(cols):
+                    x = 2*col + row % 2 if kind == "asymmetric_circles" else col
+                    cv2.circle(image, (80+x*40, 70+row*40), 11, 0, -1)
+            config = validate_config({"target": {"kind": kind, "cols": cols, "rows": rows}})
+            for extension in (".png", ".jpg", ".bmp", ".tiff"):
+                with self.subTest(kind=kind, extension=extension):
+                    raw = cv2.imencode(extension, image)[1].tobytes()
+                    c = import_capture(file_record("circles"+extension, raw), config,
+                                       split="train", sequence_id="circles", evidence="synthetic")
+                    self.assertTrue(c["found"])
+                    self.assertEqual(len(c["image_points"]), cols*rows)
 
     def test_image_import_detects_real_board(self):
         binary = cv2.imencode(".png",chessboard())[1].tobytes()
@@ -180,6 +222,17 @@ class SpikeCalibrationEngineTests(unittest.TestCase):
         for data in (np.full((3,4,5),2,dtype=np.uint8),np.array([{"x":1}],dtype=object)):
             with self.assertRaises(ValueError):
                 import_capture(npy_record(data),self.config,split="train",sequence_id="bad",evidence="hardware")
+
+    def test_forged_npy_size_is_rejected_before_array_allocation(self):
+        for shape in ((2**60, 20, 20), (8, 20, 20)):
+            with self.subTest(shape=shape):
+                stream = io.BytesIO()
+                np.lib.format.write_array_header_1_0(stream, {"shape": shape, "fortran_order": False, "descr": "|u1"})
+                with patch("spike_calibration_tool.importers.np.load") as load:
+                    with self.assertRaises(ValueError):
+                        import_capture(file_record("forged.npy", stream.getvalue()), self.config,
+                                       split="train", sequence_id="bad", evidence="synthetic")
+                    load.assert_not_called()
 
     def test_npz_disguised_as_npy_rejected(self):
         stream=io.BytesIO()

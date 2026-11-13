@@ -6,6 +6,7 @@
 
 class QComboBox;
 class QTabWidget;
+class QPushButton;
 
 namespace spike {
 
@@ -43,6 +44,10 @@ private:
     QTabWidget* m_tabs = nullptr;
     QLabel* m_status = nullptr;
     QLabel* m_revision = nullptr;
+    QLabel* m_projectState = nullptr;
+    QLabel* m_connectionState = nullptr;
+    QPushButton* m_exportButton = nullptr;
+    QPushButton* m_reportButton = nullptr;
     CapturePanel* m_capture = nullptr;
     IntrinsicsPanel* m_intrinsics = nullptr;
     TurntablePanel* m_turntable = nullptr;

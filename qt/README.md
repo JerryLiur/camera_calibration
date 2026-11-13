@@ -49,7 +49,15 @@ cmake --build qt/build --config Release
 qt\build\Release\SpikeCalibrationTool.exe --data E:\code\camera_calibration\spike_calibration_workspace
 ```
 
-`--data` 缺省为当前工作目录下的 `spike_calibration_workspace`。Windows 分发时用 `windeployqt` 补齐 Qt 运行库，并把 OpenCV 的 DLL 放到 exe 同目录。
+`--data` 缺省为当前用户的本地应用数据目录（Windows 通常为 `%LOCALAPPDATA%/SpikeCalibration/SpikeCalibrationTool/workspace`），避免从只读安装目录启动时无法保存。继续使用已有工程时，请显式传入旧工程目录。支持 `--help`、`--version`；启动失败会显示工程路径和原因。
+
+MinGW Windows 分发包可执行：
+
+```powershell
+./qt/package_windows.ps1 -RuntimeBin '<MinGW/Qt/OpenCV bin 目录>' -OutputDir 'output/SpikeCalibrationQt'
+```
+
+脚本拒绝覆盖已有包，自动补齐 Qt 插件、OpenCV 和传递依赖，附带第三方许可证与 SHA256 文件清单。必须保留完整输出目录。实际交付前仍需在目标 Windows 和真实设备上验收。
 
 界面流程与 Python 版一致：
 
@@ -68,6 +76,10 @@ cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="<Qt6 安装目录>"
 cmake --build qt/build --config Release
 ctest --test-dir qt/build -C Release --output-on-failure
 ```
+
+发布回归应先生成 `output/mock_calibration_data`，再配置 `-DSPIKE_REQUIRE_MOCK_DATA=ON`；缺失数据时配置直接失败，避免把 SKIP 当成完成测试。此选项默认关闭，以便只构建源码的环境使用。
+
+已准备 Python 环境的本机可执行 `./qt/verify_release.ps1 -RuntimeBin '<MinGW/Qt/OpenCV bin 目录>'`，统一生成模拟数据、运行 Python/HTTP/场景测试、构建 Qt 并运行全部 CTest。日志保存至 `output/industrial_audit/release_<时间>`；任一步失败或测试跳过均中止。该检查只评价软件，不替代硬件验收。
 
 | 用例 | 覆盖内容 |
 | --- | --- |

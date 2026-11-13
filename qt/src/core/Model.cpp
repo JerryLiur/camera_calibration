@@ -346,6 +346,7 @@ Capture validateCapture(const QJsonObject& input)
         static const QRegularExpression hex(QStringLiteral("^[0-9a-fA-F]{64}$"));
         require(digest.isString() && hex.match(digest.toString()).hasMatch(),
                 QStringLiteral("source.sha256 必须为64位十六进制文本"));
+        c.source.insert(QStringLiteral("sha256"), digest.toString().toLower());
     }
     if (r.contains(QStringLiteral("preview_base64")) && !r.value(QStringLiteral("preview_base64")).isNull()) {
         c.previewBase64 = requireString(r.value(QStringLiteral("preview_base64")),
@@ -484,8 +485,10 @@ QJsonObject queryRays(const QJsonObject& model, const QJsonArray& points,
             ux = u[0];
             uy = u[1];
         }
+        require(std::isfinite(ux) && std::isfinite(uy), QStringLiteral("畸变模型无法生成有效视线，请重新标定"));
         cv::Vec3d ray(ux, uy, 1.0);
-        const double norm = std::sqrt(ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]);
+        const double norm = std::hypot(std::hypot(ray[0], ray[1]), ray[2]);
+        require(std::isfinite(norm), QStringLiteral("畸变模型无法生成有效视线，请重新标定"));
         ray /= norm;
         const double azimuth = std::atan2(ray[0], ray[2]) * kRadToDeg;
         const double elevation = std::atan2(-ray[1], std::hypot(ray[0], ray[2])) * kRadToDeg;

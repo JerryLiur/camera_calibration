@@ -21,6 +21,7 @@ class CapturePanel : public ProjectPanel {
 public:
     explicit CapturePanel(Workbench* workbench, QWidget* parent = nullptr);
     void setProject(const QJsonObject& project) override;
+    QJsonObject replayOptions() const { return options(); }
 
 private slots:
     void onDemo();

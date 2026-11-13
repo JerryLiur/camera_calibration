@@ -115,6 +115,8 @@ def validate_capture(capture):
         result["image_points"], result["object_points"] = image.tolist(), obj.tolist()
     elif result.get("image_points") or result.get("object_points"):
         raise ValueError("found=false 的观测不得携带有效角点")
+    else:
+        result["image_points"], result["object_points"] = [], []
     result.setdefault("coordinate_domain", "transformed_pixels")
     if result["coordinate_domain"] != "transformed_pixels":
         raise ValueError("导入角点必须已经按工程的旋转/镜像设置转换到 transformed_pixels")
@@ -125,6 +127,8 @@ def validate_capture(capture):
     digest = result["source"].get("sha256")
     if digest is not None and (not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdefABCDEF" for c in digest)):
         raise ValueError("source.sha256 必须为64位十六进制文本")
+    if digest is not None:
+        result["source"]["sha256"] = digest.lower()
     return result
 
 
@@ -194,13 +198,22 @@ def solve_intrinsics(captures, config):
         for row in (v(0,1), v(0,0)-v(1,1)):
             constraints.append(row/max(np.linalg.norm(row), 1e-15))
     singular = np.linalg.svd(constraints, compute_uv=False)
-    if singular[-2]/singular[0] < 1e-4:
+    constraint_ratio = float(singular[-2]/singular[0])
+    if constraint_ratio < 1e-3:
         raise ValueError("姿态约束退化：只平移或正对相机不足以标定，请增加不同倾角")
     fitted = fit_camera_intrinsics([c["object_points"] for c in views], [c["image_points"] for c in views], size,
                                    provenance="assembled shared-lens splitter Spike branch")
     K, d = fitted.camera.K, fitted.camera.distortion
     if not np.isfinite(K).all() or not np.isfinite(d).all() or not math.isfinite(fitted.rms_px):
         raise ValueError("内参求解产生无效参数，请检查角点、板尺寸及姿态")
+    if fitted.intrinsic_std is None or not np.isfinite(fitted.intrinsic_std).all():
+        raise ValueError("姿态约束退化：参数不确定度无法可靠估计，请补采不同倾角后重试")
+    normals = np.asarray([cv2.Rodrigues(r)[0][:, 2] for r in fitted.rotation_vectors])
+    normal_span = float(np.degrees(np.arccos(np.clip(normals @ normals.T, -1., 1.))).max())
+    # A conservative acquisition-quality gate, not a guarantee of observability
+    # or absolute pointing accuracy. Distortion/noise can fool homography rank.
+    if not math.isfinite(normal_span) or normal_span < 3.0:
+        raise ValueError("姿态约束退化：标定板法向跨度不足3度，请补采不同倾角后重试")
     coverage = capture_guidance([c["image_points"] for c in views], size)
     warnings = list(coverage["recommendations"])
     if not 0 <= K[0,2] < size[0] or not 0 <= K[1,2] < size[1]:
@@ -216,6 +229,8 @@ def solve_intrinsics(captures, config):
             "diagnostics": {"fit_rms_px": float(fitted.rms_px), "per_view_rms_px": fitted.per_view_rms_px.tolist(),
                 "per_view": [{"capture_id": c["id"], "name": c["name"], "rms_px": float(e)} for c, e in zip(views, fitted.per_view_rms_px)],
                 "intrinsic_std": fitted.intrinsic_std.tolist() if fitted.intrinsic_std is not None else None,
+                "board_normal_span_deg": normal_span, "minimum_board_normal_span_deg": 3.0,
+                "constraint_ratio": constraint_ratio, "minimum_constraint_ratio": 1e-3,
                 "constraint_singular_values": singular.tolist(), "coverage": coverage},
             "warnings": warnings, "scope": "完整镜头＋1:1分光器＋Spike支路；不包含RGB配准及双机时序"}
 
@@ -229,7 +244,7 @@ def validate_intrinsics(model, captures, config):
         raise ValueError("请导入与训练采集序列独立的验证姿态")
     train_seq = set(model.get("train_sequence_ids", []))
     train_ids = set(model.get("train_capture_ids", []))
-    train_hashes = set(model.get("train_source_hashes", []))
+    train_hashes = {digest.lower() for digest in model.get("train_source_hashes", [])}
     per_view, errors = [], []
     for c in views:
         if c["sequence_id"] in train_seq or c["id"] in train_ids or c["source"].get("sha256") in train_hashes or _signature(c) in model.get("train_observation_signatures", []):

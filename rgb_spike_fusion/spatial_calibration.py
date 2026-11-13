@@ -393,6 +393,7 @@ class CameraCalibrationFit:
     rms_px: float
     per_view_rms_px: np.ndarray
     intrinsic_std: np.ndarray | None = None
+    rotation_vectors: tuple[np.ndarray, ...] = ()
 
 
 def fit_camera_intrinsics(
@@ -439,7 +440,7 @@ def fit_camera_intrinsics(
             )
         objects.append(obj.astype(np.float32))
         images.append(xy.astype(np.float32))
-    rms, K, d, _, _, intrinsic_std, _, per_view = (
+    rms, K, d, rvecs, _, intrinsic_std, _, per_view = (
         cv2.calibrateCameraExtended(
             objects,
             images,
@@ -459,4 +460,5 @@ def fit_camera_intrinsics(
         float(rms),
         per_view.reshape(-1),
         intrinsic_std.reshape(-1),
+        tuple(rvecs),
     )

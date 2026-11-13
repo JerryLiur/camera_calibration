@@ -10,6 +10,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <cmath>
 
 namespace spike {
 namespace ui {
@@ -19,6 +20,7 @@ TurntablePanel::TurntablePanel(Workbench* workbench, QWidget* parent)
 {
     auto* root = new QHBoxLayout(this);
     auto* left = new QVBoxLayout();
+    left->setSpacing(16);
     auto* conditionGroup = makeGroup(QStringLiteral("观测与参考条件"), this);
     auto* form = new QFormLayout(conditionGroup);
     m_mode = new QComboBox(conditionGroup);
@@ -48,6 +50,14 @@ TurntablePanel::TurntablePanel(Workbench* workbench, QWidget* parent)
     m_offsetX = new QLineEdit(QStringLiteral("0"), m_finiteWidget);
     m_offsetY = new QLineEdit(QStringLiteral("0"), m_finiteWidget);
     m_offsetZ = new QLineEdit(QStringLiteral("0"), m_finiteWidget);
+    const QList<QLineEdit*> coordinates{m_targetX, m_targetY, m_targetZ, m_offsetX, m_offsetY, m_offsetZ};
+    const QStringList coordinateNames{QStringLiteral("目标 X / m"), QStringLiteral("目标 Y / m"),
+        QStringLiteral("目标 Z / m"), QStringLiteral("入口瞳偏置 X / m"), QStringLiteral("入口瞳偏置 Y / m"), QStringLiteral("入口瞳偏置 Z / m")};
+    for (int i = 0; i < coordinates.size(); ++i) {
+        coordinates.at(i)->setMinimumWidth(0);
+        coordinates.at(i)->setAccessibleName(coordinateNames.at(i));
+        coordinates.at(i)->setToolTip(coordinateNames.at(i));
+    }
     auto* targetRow = new QHBoxLayout();
     targetRow->addWidget(m_targetX); targetRow->addWidget(m_targetY); targetRow->addWidget(m_targetZ);
     auto* offsetRow = new QHBoxLayout();
@@ -76,6 +86,7 @@ TurntablePanel::TurntablePanel(Workbench* workbench, QWidget* parent)
     root->addLayout(left, 3);
 
     auto* right = new QVBoxLayout();
+    right->setSpacing(16);
     auto* resultGroup = makeGroup(QStringLiteral("零位关系"), this);
     auto* resultLayout = new QVBoxLayout(resultGroup);
     m_result = new QLabel(QStringLiteral("等待单轴关系标定"), resultGroup);
@@ -139,7 +150,7 @@ QJsonArray TurntablePanel::parseObservations(const QString& text) const
         const double encoder = cells.at(column(QStringLiteral("encoder_deg"))).trimmed().toDouble(&okQ);
         const double u = cells.at(column(QStringLiteral("u"))).trimmed().toDouble(&okU);
         const double v = cells.at(column(QStringLiteral("v"))).trimmed().toDouble(&okV);
-        if (!okQ || !okU || !okV) {
+        if (!okQ || !okU || !okV || !std::isfinite(encoder) || !std::isfinite(u) || !std::isfinite(v)) {
             fail(QStringLiteral("CSV 第 %1 行角度或坐标无效。").arg(i + 2));
         }
         QJsonObject record;
@@ -173,7 +184,7 @@ void TurntablePanel::onLoadObservations()
 void TurntablePanel::onFit()
 {
     if (!hasProject()) { emit notify(QStringLiteral("请先新建工程。"), true); return; }
-    run(QStringLiteral("正在标定单轴转台关系…"), [this] {
+    try {
         const QJsonArray observations = parseObservations(m_observations->toPlainText());
         QJsonObject reference;
         const QString mode = m_mode->currentData().toString();
@@ -193,19 +204,32 @@ void TurntablePanel::onFit()
                                         QJsonValue(lineToNumber(m_offsetY, QStringLiteral("偏置 Y"))),
                                         QJsonValue(lineToNumber(m_offsetZ, QStringLiteral("偏置 Z")))});
         }
-        const QJsonObject project = m_workbench->calibrateTurntable(projectId(), observations, reference);
-        emit notify(QStringLiteral("单轴转台关系标定完成：%1")
-                        .arg(statusText(project.value(QStringLiteral("turntable")).toObject()
-                                            .value(QStringLiteral("status")).toString())));
-    });
+        runBackground(QStringLiteral("正在标定单轴转台关系…"),
+                      [workbench = m_workbench, id = projectId(), observations, reference] {
+            workbench->calibrateTurntable(id, observations, reference);
+        }, QStringLiteral("单轴转台关系标定完成，请查看实测值与阈值判定。"));
+    } catch (const std::exception& error) {
+        emit notify(QString::fromUtf8(error.what()), true);
+    }
 }
 
 void TurntablePanel::setProject(const QJsonObject& project)
 {
+    const bool changedProject = project.value(QStringLiteral("id")) != m_project.value(QStringLiteral("id"));
+    const bool changedFit = project.value(QStringLiteral("turntable")) != m_project.value(QStringLiteral("turntable"));
     m_project = project;
     const QJsonObject fit = project.value(QStringLiteral("turntable")).toObject();
     m_fitButton->setEnabled(hasProject() && !project.value(QStringLiteral("model")).isNull());
     if (fit.isEmpty()) {
+        if (changedProject) {
+            m_observations->clear();
+            m_mode->setCurrentIndex(0);
+            m_sign->setCurrentIndex(0);
+            m_referenceAngle->setText(QStringLiteral("0"));
+            m_farConfirmed->setChecked(false);
+            for (QLineEdit* field : {m_targetX, m_targetY, m_targetZ, m_offsetX, m_offsetY, m_offsetZ}) field->clear();
+            onModeChanged();
+        }
         m_result->setText(QStringLiteral("等待单轴关系标定：先完成 Spike 内参，再录入编码角与对应像素。"));
         m_detail->setPlainText(QString());
         return;
@@ -220,12 +244,22 @@ void TurntablePanel::setProject(const QJsonObject& project)
                                fit.value(QStringLiteral("sign")).toInt() == -1
                                    ? QStringLiteral("−1") : QStringLiteral("+1")));
     const QJsonObject reference = fit.value(QStringLiteral("reference")).toObject();
+    if (!changedProject && !changedFit) return;
     m_mode->setCurrentIndex(reference.value(QStringLiteral("mode")).toString()
                                 == QStringLiteral("finite_distance") ? 1 : 0);
     m_sign->setCurrentIndex(fit.value(QStringLiteral("sign")).toInt() == -1 ? 1 : 0);
     if (reference.contains(QStringLiteral("reference_angle_deg"))) {
-        m_referenceAngle->setText(fmt(reference.value(QStringLiteral("reference_angle_deg")).toDouble(), 3));
+        m_referenceAngle->setText(QString::number(reference.value(QStringLiteral("reference_angle_deg")).toDouble(), 'g', 17));
     }
+    const QJsonArray target = reference.value(QStringLiteral("target_position_m")).toArray();
+    const QJsonArray offset = reference.value(QStringLiteral("camera_offset_m")).toArray();
+    const QList<QLineEdit*> targetFields{m_targetX, m_targetY, m_targetZ};
+    const QList<QLineEdit*> offsetFields{m_offsetX, m_offsetY, m_offsetZ};
+    for (int i = 0; i < 3; ++i) {
+        targetFields[i]->setText(target.size() == 3 ? QString::number(target.at(i).toDouble(), 'g', 17) : QString());
+        offsetFields[i]->setText(offset.size() == 3 ? QString::number(offset.at(i).toDouble(), 'g', 17) : QString());
+    }
+    m_observations->setPlainText(pretty(fit.value(QStringLiteral("observations"))));
     m_farConfirmed->setChecked(reference.value(QStringLiteral("far_field_confirmed")).toBool());
     m_detail->setPlainText(pretty(fit));
     onModeChanged();

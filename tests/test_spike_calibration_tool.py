@@ -59,6 +59,53 @@ class WorkbenchCase(unittest.TestCase):
 
 
 class ServiceAcceptanceTests(WorkbenchCase):
+    def test_parallel_workbenches_cannot_silently_overwrite_each_other(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from spike_calibration_tool.service import Workbench
+        other = Workbench(self.root)
+        barrier = threading.Barrier(2)
+        def save(app, operator):
+            barrier.wait(timeout=5)
+            try:
+                return app.update_config(self.pid, {"operator": operator})
+            except ValueError:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda args: save(*args), [(self.app, "A"), (other, "B")]))
+        winner = [p for p in results if p is not None]
+        self.assertEqual(len(winner), 1)
+        self.assertEqual(Workbench(self.root).get_project(self.pid), winner[0])
+
+    def test_malformed_project_is_isolated_on_startup_without_breaking_state(self):
+        from spike_calibration_tool.service import Workbench
+        bad_id = "f" * 32
+        (self.root / (bad_id + ".json")).write_text(json.dumps({"id": bad_id}), encoding="utf-8")
+        reopened = Workbench(self.root)
+        self.assertEqual(len(reopened.state()["projects"]), 1)
+        self.assertEqual(len(reopened.load_errors), 1)
+
+    def test_undetected_json_without_point_fields_can_be_previewed_and_reported(self):
+        capture = {"name": "blank.json", "sequence_id": "blank", "split": "train",
+                   "evidence": "synthetic", "found": False, "image_size": [80, 60]}
+        p = self.app.import_observations(self.pid, {"captures": [capture]})
+        self.assertTrue(self.app.preview(self.pid, p["captures"][0]["id"]).startswith(b"\x89PNG"))
+        self.assertIn("blank.json", self.app.report_html(self.pid))
+
+    def test_persisted_model_must_match_geometry_before_sdk_or_workspace_use(self):
+        from spike_calibration_tool.service import Workbench
+        from spike_calibration_tool.sdk import SpikeCalibrationSDK
+        p = self.solved()
+        p["config"]["orientation"]["flip_x"] = True
+        (self.root / (self.pid + ".json")).write_text(json.dumps(p), encoding="utf-8")
+        reopened = Workbench(self.root)
+        self.assertEqual(reopened.state()["projects"], [])
+        bundle = self.app.export_project(self.pid)
+        bundle["project"] = p
+        path = self.root / "bundle.json"
+        path.write_text(json.dumps(bundle), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "配置"):
+            SpikeCalibrationSDK(path)
+
     def test_new_project_has_single_spike_scope_and_no_fabricated_model(self):
         self.assertEqual(self.project["captures"], [])
         self.assert_invalid_results(self.project)
@@ -180,7 +227,7 @@ class ServiceAcceptanceTests(WorkbenchCase):
         train = next(c for c in captures if c["split"] == "train")
         test = next(c for c in captures if c["split"] == "test")
         digest = hashlib.sha256(b"qa-identical-source-bytes").hexdigest()
-        train["source"]["sha256"] = digest
+        train["source"]["sha256"] = digest.upper()
         test["source"]["sha256"] = digest
         self.app.import_observations(self.pid, {"captures": captures})
         self.app.solve(self.pid)

@@ -69,6 +69,31 @@ def _raw_window(data, options):
         "spike_quality": representation["quality"]}
 
 
+def _check_npy_header(binary):
+    """Check declared allocation against actual bytes before numpy allocates."""
+    if binary.startswith(b"PK"):
+        raise ValueError("NPY 必须为单个数组；不能将 NPZ 归档改名为 NPY")
+    stream = io.BytesIO(binary)
+    try:
+        version = np.lib.format.read_magic(stream)
+        if version == (1, 0):
+            shape, _, dtype = np.lib.format.read_array_header_1_0(stream)
+        elif version in ((2, 0), (3, 0)):
+            # Allowed scalar numeric dtype/shape fields are ASCII also in v3.
+            shape, _, dtype = np.lib.format.read_array_header_2_0(stream)
+        else:
+            raise ValueError("不支持的 NPY 版本")
+    except (ValueError, EOFError, OSError) as exc:
+        raise ValueError("无法读取二值 Spike NPY 头") from exc
+    if len(shape) != 3 or not all(n > 0 for n in shape) or dtype.kind not in "buif":
+        raise ValueError("Spike NPY 必须是数值二值 [T,H,W] 数组")
+    count = math.prod(shape)
+    if count > 100_000_000 or shape[1]*shape[2] > 25_000_000:
+        raise ValueError("Spike NPY 声明尺寸超过元素/图像上限")
+    if count*dtype.itemsize != len(binary)-stream.tell():
+        raise ValueError("Spike NPY 头声明的数据长度与文件不一致")
+
+
 def _packed(data, options):
     if options.get("layout_confirmed") is not True or options.get("layout") not in ("packed_flat", "row_packed") or options.get("bitorder") not in ("little", "big"):
         raise ValueError("DAT/BIN 不猜测布局：请明确 layout_confirmed=true、layout=packed_flat/row_packed 和 bitorder=little/big")
@@ -141,6 +166,7 @@ def import_capture(file_record, config, *, split, sequence_id, evidence, options
         raise ValueError("文件为空或超过64MiB导入限制")
     suffix = PureWindowsPath(name).suffix.lower()
     if suffix == ".npy":
+        _check_npy_header(binary)
         try:
             raw = np.load(io.BytesIO(binary), allow_pickle=False)
         except (ValueError, EOFError, OSError) as exc:

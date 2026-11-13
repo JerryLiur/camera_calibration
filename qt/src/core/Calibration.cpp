@@ -39,6 +39,7 @@ struct IntrinsicFit {
     double rms = 0.0;
     std::vector<double> perViewRms;
     std::vector<double> intrinsicStd;
+    double normalSpanDeg = 0.0;
 };
 
 IntrinsicFit fitCameraIntrinsics(
@@ -95,13 +96,8 @@ IntrinsicFit fitCameraIntrinsics(
                                     100, 1e-9);
 #if defined(CV_VERSION_MAJOR) && CV_VERSION_MAJOR >= 4
     cv::Mat intrinsicStd, extrinsicStd;
-    // OpenCV 5 renamed the extended C++ overload to calibrateCamera; the
-    // calibrateCameraExtended name survives only as CV_EXPORTS_AS for bindings.
-#if CV_VERSION_MAJOR >= 5
+    // The extended C++ API is an overload; calibrateCameraExtended is its Python name.
     result.rms = cv::calibrateCamera(
-#else
-    result.rms = cv::calibrateCameraExtended(
-#endif
         objectFloat, imageFloat, size, result.K, result.distortion, rvecs, tvecs,
         intrinsicStd, extrinsicStd, perViewErrors, 0, criteria);
     for (int i = 0; i < intrinsicStd.rows; ++i) {
@@ -127,6 +123,19 @@ IntrinsicFit fitCameraIntrinsics(
             std::sqrt(sum / static_cast<double>(projected.size()));
     }
 #endif
+    std::vector<cv::Vec3d> normals;
+    for (const cv::Mat& rvec : rvecs) {
+        cv::Mat rotation;
+        cv::Rodrigues(rvec, rotation);
+        normals.emplace_back(rotation.at<double>(0, 2), rotation.at<double>(1, 2),
+                             rotation.at<double>(2, 2));
+    }
+    for (size_t i = 0; i < normals.size(); ++i) {
+        for (size_t j = i + 1; j < normals.size(); ++j) {
+            const double angle = std::acos(std::clamp(normals[i].dot(normals[j]), -1.0, 1.0)) * kRadToDeg;
+            result.normalSpanDeg = std::max(result.normalSpanDeg, angle);
+        }
+    }
     for (int i = 0; i < perViewErrors.rows; ++i) {
         result.perViewRms.push_back(perViewErrors.at<double>(i, 0));
     }
@@ -245,8 +254,9 @@ QJsonObject solveIntrinsics(const std::vector<Capture>& captures, const Config& 
     }
     cv::Mat singular;
     cv::SVD::compute(constraints, singular, cv::SVD::NO_UV);
+    constexpr double minimumConstraintRatio = 1e-3;
     require(singular.rows >= 2 && singular.at<double>(0) > 0.0
-                && singular.at<double>(singular.rows - 2) / singular.at<double>(0) >= 1e-4,
+                && singular.at<double>(singular.rows - 2) / singular.at<double>(0) >= minimumConstraintRatio,
             QStringLiteral("姿态约束退化：只平移或正对相机不足以标定，请增加不同倾角"));
     std::vector<double> singularValues;
     for (int i = 0; i < singular.rows; ++i) singularValues.push_back(singular.at<double>(i));
@@ -272,6 +282,14 @@ QJsonObject solveIntrinsics(const std::vector<Capture>& captures, const Config& 
     for (double value : distortion) {
         require(std::isfinite(value), QStringLiteral("内参求解产生无效参数，请检查角点、板尺寸及姿态"));
     }
+    for (double value : fitted.intrinsicStd) {
+        require(std::isfinite(value), QStringLiteral("姿态约束退化：内参不确定度不可估计，请增加不同倾角与视场覆盖后重采"));
+    }
+    // Conservative acquisition-quality gate, not an angular accuracy certificate.
+    // Noise/distortion can mask degeneracy in the homography-only rank check.
+    require(fitted.normalSpanDeg >= 3.0,
+            QStringLiteral("姿态约束退化：训练板法向跨度仅 %1°，至少需要 3°，请增加不同倾角后重采")
+                .arg(fitted.normalSpanDeg, 0, 'f', 3));
 
     const QJsonObject coverage = captureGuidance(coverageViews, size);
     QJsonArray warnings;
@@ -304,6 +322,10 @@ QJsonObject solveIntrinsics(const std::vector<Capture>& captures, const Config& 
                        fitted.intrinsicStd.empty() ? QJsonValue()
                                                    : QJsonValue(vectorToArray(fitted.intrinsicStd)));
     diagnostics.insert(QStringLiteral("constraint_singular_values"), vectorToArray(singularValues));
+    diagnostics.insert(QStringLiteral("constraint_rank_ratio"), singular.at<double>(singular.rows - 2) / singular.at<double>(0));
+    diagnostics.insert(QStringLiteral("minimum_constraint_rank_ratio"), minimumConstraintRatio);
+    diagnostics.insert(QStringLiteral("board_normal_span_deg"), fitted.normalSpanDeg);
+    diagnostics.insert(QStringLiteral("minimum_board_normal_span_deg"), 3.0);
     diagnostics.insert(QStringLiteral("coverage"), coverage);
 
     std::set<QString> trainSequences, trainHashes, trainSignatures;
@@ -357,7 +379,7 @@ QJsonObject validateIntrinsics(const QJsonObject& model,
         trainIds.insert(value.toString());
     }
     for (const QJsonValue& value : model.value(QStringLiteral("train_source_hashes")).toArray()) {
-        trainHashes.insert(value.toString());
+        trainHashes.insert(value.toString().toLower());
     }
     for (const QJsonValue& value : model.value(QStringLiteral("train_observation_signatures")).toArray()) {
         trainSignatures.insert(value.toString());

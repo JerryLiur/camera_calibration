@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 if(COMMAND qt_standard_project_setup)
   qt_standard_project_setup()
@@ -27,10 +28,14 @@ set(SPIKE_VENDOR_SDK_INCLUDE_DIR "" CACHE PATH "Vendor C++ SDK include directory
 set(SPIKE_VENDOR_SDK_LIBRARY "" CACHE FILEPATH "Vendor C++ SDK import library (optional)")
 option(SPIKE_BUILD_SELFTEST "Build the console geometry self-test" ON)
 option(SPIKE_BUILD_TESTS "Build the mock-data integration and Widgets smoke tests" ON)
+option(SPIKE_REQUIRE_MOCK_DATA "Fail configuration when release validation data is missing" OFF)
 option(SPIKE_USE_VENDOR_SHIM "Compile the integrator-provided VendorSdkShim.h" OFF)
 set(SPIKE_VENDOR_SHIM_DIR "" CACHE PATH "Directory containing VendorSdkShim.h (optional)")
 set(SPIKE_MOCK_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../output/mock_calibration_data"
     CACHE PATH "Mock dataset directory (scripts/generate_mock_calibration_data.py)")
+if(SPIKE_REQUIRE_MOCK_DATA AND NOT EXISTS "${SPIKE_MOCK_DATA_DIR}/manifest.json")
+  message(FATAL_ERROR "Generate mock data before release validation: scripts/generate_mock_calibration_data.py")
+endif()
 
 set(SPIKE_CORE_HEADERS
   src/core/Common.h
@@ -102,7 +107,11 @@ set(SPIKE_UI_SOURCES
 add_library(spike_ui STATIC ${SPIKE_UI_SOURCES} ${SPIKE_UI_HEADERS})
 target_link_libraries(spike_ui PUBLIC spike_core Qt6::Widgets)
 
-add_executable(SpikeCalibrationQt WIN32 src/app/main.cpp ${SPIKE_UI_HEADERS})
+add_executable(SpikeCalibrationQt WIN32 src/app/main.cpp ${SPIKE_UI_HEADERS} resources/app.qrc)
+if(WIN32)
+  configure_file(resources/app.rc.in "${CMAKE_CURRENT_BINARY_DIR}/app.rc" @ONLY)
+  target_sources(SpikeCalibrationQt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
+endif()
 target_link_libraries(SpikeCalibrationQt PRIVATE spike_ui)
 set_target_properties(SpikeCalibrationQt PROPERTIES OUTPUT_NAME "SpikeCalibrationTool")
 if(SPIKE_USE_VENDOR_SHIM)
@@ -143,7 +152,7 @@ if(SPIKE_BUILD_TESTS)
   set_tests_properties(mock_data_integration PROPERTIES SKIP_RETURN_CODE 77)
 
   # Builds the real MainWindow offscreen: panel wiring and stale-project recovery.
-  add_executable(spike_uitest tests/uitest.cpp)
+  add_executable(spike_uitest tests/uitest.cpp resources/app.qrc)
   target_link_libraries(spike_uitest PRIVATE spike_ui)
   add_test(NAME widgets_smoke COMMAND spike_uitest)
   set_tests_properties(widgets_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -158,10 +167,15 @@ if(SPIKE_BUILD_TESTS)
     if(_spike_qt_core_location)
       get_filename_component(_spike_qt_bin "${_spike_qt_core_location}" DIRECTORY)
       get_filename_component(_spike_qt_prefix "${_spike_qt_bin}" DIRECTORY)
-      set_tests_properties(mock_data_integration geometry_self_test PROPERTIES
-        ENVIRONMENT "PATH=${_spike_qt_bin};$ENV{PATH}")
+      # ENVIRONMENT is a CMake list: PATH separators must remain inside one item.
+      string(REPLACE ";" "\\;" _spike_test_path "${_spike_qt_bin};$ENV{PATH}")
+      set_tests_properties(mock_data_integration PROPERTIES
+        ENVIRONMENT "PATH=${_spike_test_path}")
+      if(SPIKE_BUILD_SELFTEST)
+        set_tests_properties(geometry_self_test PROPERTIES ENVIRONMENT "PATH=${_spike_test_path}")
+      endif()
       set_tests_properties(widgets_smoke PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PATH=${_spike_qt_bin};$ENV{PATH};QT_PLUGIN_PATH=${_spike_qt_prefix}/plugins")
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PATH=${_spike_test_path};QT_PLUGIN_PATH=${_spike_qt_prefix}/plugins")
     endif()
   endif()
 endif()
