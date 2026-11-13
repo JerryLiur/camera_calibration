@@ -34,6 +34,10 @@ bool FileCameraDevice::open(const QVariantMap& parameters, QString* error)
     };
     const QString path = parameters.value(QStringLiteral("path")).toString();
     if (path.isEmpty()) return failWith(QStringLiteral("请选择回放目录或单个采集文件"));
+    // Re-opening replaces the playlist; appending here would duplicate every
+    // frame after a reconnect and break the replay length.
+    m_files.clear();
+    m_decodeOptions = QJsonObject();
     const QFileInfo info(path);
     const QStringList suffixes = {QStringLiteral("*.png"), QStringLiteral("*.jpg"),
                                   QStringLiteral("*.jpeg"), QStringLiteral("*.bmp"),

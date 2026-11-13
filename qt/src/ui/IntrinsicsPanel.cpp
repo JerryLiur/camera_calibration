@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 namespace spike {

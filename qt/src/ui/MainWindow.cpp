@@ -155,7 +155,27 @@ void MainWindow::refresh()
     if (chosen.isEmpty()) {
         applyProject(QJsonObject());
     } else {
-        applyProject(m_workbench->getProject(chosen));
+        try {
+            applyProject(m_workbench->getProject(chosen));
+        } catch (const std::exception& error) {
+            // The id remembered by QSettings can outlive its file (workspace moved
+            // or cleaned). Falling back keeps startup working instead of throwing.
+            m_currentId.clear();
+            const QString fallback = projects.isEmpty()
+                                         ? QString()
+                                         : projects.at(0).toObject()
+                                               .value(QStringLiteral("id")).toString();
+            if (fallback.isEmpty() || fallback == chosen) {
+                applyProject(QJsonObject());
+            } else {
+                m_currentId = fallback;
+                const int fallbackIndex = m_projectSelect->findData(fallback);
+                if (fallbackIndex >= 0) m_projectSelect->setCurrentIndex(fallbackIndex);
+                applyProject(m_workbench->getProject(fallback));
+            }
+            onNotify(QStringLiteral("上次打开的工程不可用，已重新选择：%1")
+                         .arg(QString::fromUtf8(error.what())));
+        }
     }
     for (const QJsonValue& item : state.value(QStringLiteral("load_errors")).toArray()) {
         onNotify(QStringLiteral("工程读取提示：%1").arg(item.toString()), true);

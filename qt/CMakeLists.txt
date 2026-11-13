@@ -12,15 +12,25 @@ if(COMMAND qt_standard_project_setup)
 endif()
 
 find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d imgcodecs)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+# OpenCV 5 renamed opencv_calib3d to opencv_calib and moved chessboard detection
+# into opencv_objdetect; calib3d.hpp remains available as a compatibility header.
+if(OpenCV_VERSION VERSION_GREATER_EQUAL 5)
+  list(APPEND OpenCV_LIBS opencv_calib opencv_objdetect)
+else()
+  list(APPEND OpenCV_LIBS opencv_calib3d)
+endif()
 
 # Optional: link the camera vendor's C++ SDK. The runtime adapter itself is ABI-neutral
 # (a C function-pointer table), so the core build never needs the vendor headers.
 set(SPIKE_VENDOR_SDK_INCLUDE_DIR "" CACHE PATH "Vendor C++ SDK include directory (optional)")
 set(SPIKE_VENDOR_SDK_LIBRARY "" CACHE FILEPATH "Vendor C++ SDK import library (optional)")
 option(SPIKE_BUILD_SELFTEST "Build the console geometry self-test" ON)
+option(SPIKE_BUILD_TESTS "Build the mock-data integration and Widgets smoke tests" ON)
 option(SPIKE_USE_VENDOR_SHIM "Compile the integrator-provided VendorSdkShim.h" OFF)
 set(SPIKE_VENDOR_SHIM_DIR "" CACHE PATH "Directory containing VendorSdkShim.h (optional)")
+set(SPIKE_MOCK_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../output/mock_calibration_data"
+    CACHE PATH "Mock dataset directory (scripts/generate_mock_calibration_data.py)")
 
 set(SPIKE_CORE_HEADERS
   src/core/Common.h
@@ -86,11 +96,14 @@ set(SPIKE_UI_SOURCES
   src/ui/ConfigPanel.cpp
   src/ui/DevicePanel.cpp
   src/ui/MainWindow.cpp
-  src/app/main.cpp
 )
 
-add_executable(SpikeCalibrationQt WIN32 ${SPIKE_UI_SOURCES} ${SPIKE_UI_HEADERS})
-target_link_libraries(SpikeCalibrationQt PRIVATE spike_core Qt6::Widgets)
+# Widgets layer as a library so the smoke test can build the real MainWindow.
+add_library(spike_ui STATIC ${SPIKE_UI_SOURCES} ${SPIKE_UI_HEADERS})
+target_link_libraries(spike_ui PUBLIC spike_core Qt6::Widgets)
+
+add_executable(SpikeCalibrationQt WIN32 src/app/main.cpp ${SPIKE_UI_HEADERS})
+target_link_libraries(SpikeCalibrationQt PRIVATE spike_ui)
 set_target_properties(SpikeCalibrationQt PROPERTIES OUTPUT_NAME "SpikeCalibrationTool")
 if(SPIKE_USE_VENDOR_SHIM)
   target_compile_definitions(SpikeCalibrationQt PRIVATE SPIKE_USE_VENDOR_SHIM=1)
@@ -105,9 +118,52 @@ if(SPIKE_BUILD_SELFTEST)
   add_executable(spike_selftest tests/selftest.cpp)
   target_link_libraries(spike_selftest PRIVATE spike_core)
   enable_testing()
-  add_test(NAME geometry_self_test COMMAND spike_selftest
-    --data "${CMAKE_BINARY_DIR}/selftest_workspace"
-    --output "${CMAKE_BINARY_DIR}/selftest_output")
+  if(EXISTS "${SPIKE_MOCK_DATA_DIR}/manifest.json")
+    add_test(NAME geometry_self_test COMMAND spike_selftest
+      --data "${CMAKE_BINARY_DIR}/selftest_workspace"
+      --output "${CMAKE_BINARY_DIR}/selftest_output"
+      --observations "${SPIKE_MOCK_DATA_DIR}/scenes/clean"
+      --ground-truth "${SPIKE_MOCK_DATA_DIR}/ground_truth.json")
+  else()
+    add_test(NAME geometry_self_test COMMAND spike_selftest
+      --data "${CMAKE_BINARY_DIR}/selftest_workspace"
+      --output "${CMAKE_BINARY_DIR}/selftest_output")
+  endif()
+endif()
+
+if(SPIKE_BUILD_TESTS)
+  enable_testing()
+
+  add_executable(spike_integration tests/integration.cpp)
+  target_link_libraries(spike_integration PRIVATE spike_core)
+  add_test(NAME mock_data_integration COMMAND spike_integration
+    --mock-data "${SPIKE_MOCK_DATA_DIR}"
+    --data "${CMAKE_BINARY_DIR}/integration_workspace"
+    --output "${CMAKE_BINARY_DIR}/integration_output")
+  set_tests_properties(mock_data_integration PROPERTIES SKIP_RETURN_CODE 77)
+
+  # Builds the real MainWindow offscreen: panel wiring and stale-project recovery.
+  add_executable(spike_uitest tests/uitest.cpp)
+  target_link_libraries(spike_uitest PRIVATE spike_ui)
+  add_test(NAME widgets_smoke COMMAND spike_uitest)
+  set_tests_properties(widgets_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+  if(WIN32)
+    # CTest starts the executables directly, so Qt/OpenCV DLLs and the platform
+    # plugins must be reachable without a system-wide PATH entry.
+    get_target_property(_spike_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)
+    if(NOT _spike_qt_core_location)
+      get_target_property(_spike_qt_core_location Qt6::Core IMPORTED_LOCATION)
+    endif()
+    if(_spike_qt_core_location)
+      get_filename_component(_spike_qt_bin "${_spike_qt_core_location}" DIRECTORY)
+      get_filename_component(_spike_qt_prefix "${_spike_qt_bin}" DIRECTORY)
+      set_tests_properties(mock_data_integration geometry_self_test PROPERTIES
+        ENVIRONMENT "PATH=${_spike_qt_bin};$ENV{PATH}")
+      set_tests_properties(widgets_smoke PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PATH=${_spike_qt_bin};$ENV{PATH};QT_PLUGIN_PATH=${_spike_qt_prefix}/plugins")
+    endif()
+  endif()
 endif()
 
 if(WIN32)

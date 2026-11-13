@@ -31,7 +31,7 @@ private slots:
     void onProjectSelected(int index);
     void onExport();
     void onReport();
-    void onNotify(const QString& text, bool error);
+    void onNotify(const QString& text, bool error = false);
     void onDeviceConnection(bool connected);
 
 private:

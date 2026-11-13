@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 namespace spike {

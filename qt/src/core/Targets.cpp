@@ -2,6 +2,9 @@
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/features2d.hpp>
+// OpenCV 5 declares chessboard / circles-grid detection in objdetect.hpp
+// (calib3d.hpp is only a compatibility umbrella there).
+#include <opencv2/objdetect.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
@@ -194,6 +197,7 @@ TargetResult detectTarget(const cv::Mat& gray8, const QJsonObject& targetConfig)
     }
 
     for (const auto& p : corners) result.points.emplace_back(p.x, p.y);
+    result.found = true;
     result.objectPoints = objects;
     for (int i = 0; i < static_cast<int>(result.points.size()); ++i) result.ids.push_back(i);
     result.quality = imageQuality(gray8, &result.points);

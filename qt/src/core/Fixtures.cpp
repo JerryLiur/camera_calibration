@@ -38,10 +38,16 @@ std::vector<Capture> demoCaptures(const Config& config)
     const cv::Mat objectMat(static_cast<int>(objectPoints.size()), 1, CV_64FC3,
                             objectPoints.data());
     const double extent = std::max((cols + 1) * spacing, (rows + 1) * spacing);
-    const cv::Mat K = (cv::Mat_<double>(3, 3) << 620.0, 0.0, 319.0,
-                       0.0, 610.0, 239.0,
-                       0.0, 0.0, 1.0);
-    const cv::Mat distortion = (cv::Mat_<double>(1, 5) << -0.055, 0.012, 0.0007, -0.0005, 0.0);
+    // Explicit element assignment instead of the `Mat_ <<` comma initializer,
+    // which OpenCV 5 deprecated.
+    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
+    K.at<double>(0, 0) = 620.0;
+    K.at<double>(0, 2) = 319.0;
+    K.at<double>(1, 1) = 610.0;
+    K.at<double>(1, 2) = 239.0;
+    cv::Mat distortion = cv::Mat::zeros(1, 5, CV_64F);
+    const double distortionCoefficients[5] = {-0.055, 0.012, 0.0007, -0.0005, 0.0};
+    for (int i = 0; i < 5; ++i) distortion.at<double>(0, i) = distortionCoefficients[i];
 
     std::mt19937_64 rng(20261104);
     std::normal_distribution<double> noise(0.0, 0.035);

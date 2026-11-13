@@ -457,8 +457,13 @@ QJsonObject queryRays(const QJsonObject& model, const QJsonArray& points,
     std::vector<cv::Point2d> source = xy;
     cv::Mat src(static_cast<int>(source.size()), 1, CV_64FC2, source.data());
     cv::Mat Kmat = cv::Mat(camera.K).clone();
-    cv::Mat dmat(1, static_cast<int>(camera.distortion.size()), CV_64F,
-                 camera.distortion.empty() ? nullptr : camera.distortion.data());
+    // OpenCV 5 only accepts a non-const data pointer here; keep a writable copy.
+    // An empty distortion vector means "no distortion" (empty cv::Mat / noArray()).
+    std::vector<double> distortion = camera.distortion;
+    cv::Mat dmat;
+    if (!distortion.empty()) {
+        dmat = cv::Mat(1, static_cast<int>(distortion.size()), CV_64F, distortion.data());
+    }
     cv::Mat undistorted;
     cv::undistortPoints(src, undistorted, Kmat, dmat);
 

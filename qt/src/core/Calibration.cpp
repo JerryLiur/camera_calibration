@@ -95,7 +95,13 @@ IntrinsicFit fitCameraIntrinsics(
                                     100, 1e-9);
 #if defined(CV_VERSION_MAJOR) && CV_VERSION_MAJOR >= 4
     cv::Mat intrinsicStd, extrinsicStd;
+    // OpenCV 5 renamed the extended C++ overload to calibrateCamera; the
+    // calibrateCameraExtended name survives only as CV_EXPORTS_AS for bindings.
+#if CV_VERSION_MAJOR >= 5
+    result.rms = cv::calibrateCamera(
+#else
     result.rms = cv::calibrateCameraExtended(
+#endif
         objectFloat, imageFloat, size, result.K, result.distortion, rvecs, tvecs,
         intrinsicStd, extrinsicStd, perViewErrors, 0, criteria);
     for (int i = 0; i < intrinsicStd.rows; ++i) {

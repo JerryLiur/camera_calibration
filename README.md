@@ -21,13 +21,16 @@
 - 新增 `ICameraDevice` 设备边界与独立采集线程：厂商 SDK 通过一个函数指针表接入，界面可连接设备、调曝光/增益、实时预览并把停稳帧直接采集成标定观测。接入步骤见 [SDK 接入说明](qt/docs/SDK_INTEGRATION.md)，模块映射见 [架构说明](qt/docs/ARCHITECTURE.md)。
 - 控制台自检 `spike_selftest` 可读取本仓库的模拟真值数据，对 K、畸变、视线角和转台零位做跨实现数值对照。
 
-构建与运行：
+构建、测试与运行：
 
 ```powershell
 cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="<Qt6 安装目录>"
 cmake --build qt/build --config Release
+ctest --test-dir qt/build -C Release --output-on-failure
 qt\build\Release\spike_selftest.exe --observations output\mock_calibration_data\scenes\clean --ground-truth output\mock_calibration_data\ground_truth.json
 ```
+
+`ctest` 包含三个用例：几何自检、模拟数据集成测试（导入链路、7 个场景矩阵、文件回放设备、模拟厂商 SDK、持久化）和 Qt Widgets 冒烟测试。集成测试需要 `output\mock_calibration_data`，缺失时会自动 SKIP。
 
 根目录下的 Python 源码保留为算法与数据契约的参考实现，不再作为设备联调的主技术栈。
 

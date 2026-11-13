@@ -558,7 +558,11 @@ QByteArray Workbench::preview(const QString& id, const QString& captureId, bool 
         std::vector<double> distortionValues = camera.distortion;
         const cv::Mat d(1, static_cast<int>(distortionValues.size()), CV_64F,
                         distortionValues.data());
-        cv::undistort(image, image, K, d);
+        // OpenCV 5 refuses src == dst here, and the preview image may also be the
+        // empty-canvas fallback, so map into a dedicated buffer.
+        cv::Mat undistortedImage;
+        cv::undistort(image, undistortedImage, K, d);
+        image = undistortedImage;
         if (!corners.empty()) {
             const cv::Mat source(static_cast<int>(corners.size()), 1, CV_32FC2, corners.data());
             cv::Mat destination;

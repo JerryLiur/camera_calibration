@@ -18,6 +18,8 @@
 | `src/ui/` | Qt Widgets 主窗口与 5 个流程页（采集/内参/转台/配置/设备） |
 | `src/app/main.cpp` | 桌面入口 |
 | `tests/selftest.cpp` | 控制台几何自检，可用仓库里的模拟真值数据做跨语言对照 |
+| `tests/integration.cpp` | 模拟数据集成测试：PNG/NPY/DAT 导入、PNG 全链路、7 个场景矩阵、文件设备与采集线程、模拟厂商 SDK、持久化与 SDK 回读 |
+| `tests/uitest.cpp` | Widgets 冒烟测试：离屏构造真实主窗口、页签/项目选择、残留工程 ID 恢复 |
 | `examples/VendorSdkShim.*` | 厂商 SDK 接线模板 |
 | `docs/ARCHITECTURE.md` | Python → C++ 模块映射、数据流与线程模型 |
 | `docs/SDK_INTEGRATION.md` | 接入真实 C++ SDK 的完整步骤 |
@@ -57,14 +59,41 @@ qt\build\Release\SpikeCalibrationTool.exe --data E:\code\camera_calibration\spik
 4. 「03 转台关系」录入编码角观测，选择远场或近距离已知几何求单轴零位。
 5. 「05 设备连接与控制」连接相机 C++ SDK，预览并把停稳的采集帧直接导入当前工程；顶部可导出标定包 JSON 与自包含 HTML 报告。
 
-## 自检与跨语言对照
+## 测试
+
+三个测试目标都注册到 CTest。`mock_data_integration` 需要仓库里已生成的模拟数据（`output/mock_calibration_data`），缺失时该用例标记为 SKIP（返回码 77）而不是失败。
 
 ```powershell
-cmake --build qt/build --config Release --target spike_selftest
+cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="<Qt6 安装目录>"
+cmake --build qt/build --config Release
 ctest --test-dir qt/build -C Release --output-on-failure
 ```
 
-也可以直接运行，并让 C++ 版读取仓库里已有的独立模拟真值数据做数值对照：
+| 用例 | 覆盖内容 |
+| --- | --- |
+| `geometry_self_test` | 合成夹具内参/留出验证、导出包与 C++ SDK 回读、模拟真值 K 与畸变、视线角、远场与有限距离转台零位 |
+| `mock_data_integration` | PNG 与二值 NPY / 位打包 DAT 导入及拒绝路径、PNG 12 张全链路（检测→求解→验证→去畸变预览→导出/报告）、clean/noisy/prism/flat_distorted/degenerate/degenerate_noisy/leak 场景矩阵、文件回放设备、`DeviceController` 异步采集与停稳帧入库、模拟厂商 SDK（含越界与双通道帧拒绝）、重开工程与失效规则 |
+| `widgets_smoke` | 离屏构造真实 `MainWindow`：五个页签、工程下拉框、残留 `lastProject` 时不清零启动 |
+
+单独运行集成测试（可指定其他数据集）：
+
+```powershell
+qt\build\spike_integration.exe `
+  --mock-data output\mock_calibration_data `
+  --data qt\build\integration_workspace `
+  --output qt\build\integration_output
+```
+
+结果写入 `integration_output\integration_report.json`（逐项实测值、失败原因、场景指标）。相关 CMake 选项：
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `SPIKE_BUILD_SELFTEST` | `ON` | 构建控制台几何自检 |
+| `SPIKE_BUILD_TESTS` | `ON` | 构建集成测试与 Widgets 冒烟测试 |
+| `SPIKE_MOCK_DATA_DIR` | `../output/mock_calibration_data` | 模拟数据集目录 |
+| `SPIKE_USE_VENDOR_SHIM` | `OFF` | 编译 `examples/VendorSdkShim.cpp` 模板（验证厂商接线路径可构建） |
+
+也可以直接运行自检，让它读取独立模拟真值数据做数值对照：
 
 ```powershell
 qt\build\Release\spike_selftest.exe `
@@ -75,6 +104,9 @@ qt\build\Release\spike_selftest.exe `
 ```
 
 自检覆盖：内参求解、留出验证、导出包与 C++ SDK 回读、模拟真值 K/畸变、视线方位/俯仰角、远场与有限距离转台零位。输出 `self_test.json`（含逐项实测值）、`calibration.json`、`report.html`。
+
+> 转台零位的真值容差取 0.15°：这份模拟数据本身的零位误差约 0.06°（与 Python 参考实现完全一致），
+> 0.05° 是该数据集对**验证残差 P95** 的验收门限，不是真值偏差容差。
 
 ## 与 Python 版的差异（算法流程不变）
 

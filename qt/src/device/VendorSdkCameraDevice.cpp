@@ -29,9 +29,12 @@ bool VendorSdkCameraDevice::open(const QVariantMap& parameters, QString* error)
     const int width = m_parameters.value(QStringLiteral("max_width")).toInt();
     const int height = m_parameters.value(QStringLiteral("max_height")).toInt();
     const int channels = m_parameters.value(QStringLiteral("channels")).toInt();
-    if (width <= 0 || height <= 0 || channels < 1 || channels > 4
+    // Only packed 8-bit 1/3/4-channel frames are mapped onto cv::Mat. A 2-channel
+    // (e.g. YUY2-style) buffer has no matching cv::Mat type here, so it must be
+    // rejected rather than reinterpreted as 4 channels and read past the buffer.
+    if (width <= 0 || height <= 0 || (channels != 1 && channels != 3 && channels != 4)
         || static_cast<qint64>(width) * height * channels > 100000000LL) {
-        return failWith(QStringLiteral("SDK 帧缓冲尺寸无效"));
+        return failWith(QStringLiteral("SDK 帧缓冲尺寸无效：仅支持 1/3/4 通道 8 位帧"));
     }
     m_buffer.resize(static_cast<int>(static_cast<qint64>(width) * height * channels));
 
@@ -96,8 +99,14 @@ bool VendorSdkCameraDevice::grab(DeviceFrame& frame, int timeoutMs, QString* err
                                   m_buffer.size(), &width, &height, &channels, timeoutMs);
     if (result == 1) return false;   // timeout is not an error for a live stream
     if (result < 0) return failWith(QStringLiteral("SDK 采集失败（代码 %1）").arg(result));
-    if (width <= 0 || height <= 0 || channels < 1 || channels > 4
-        || static_cast<qint64>(width) * height * channels > m_buffer.size()) {
+    if (width <= 0 || height <= 0) {
+        return failWith(QStringLiteral("SDK 返回了无效的帧尺寸"));
+    }
+    if (channels != 1 && channels != 3 && channels != 4) {
+        return failWith(QStringLiteral("SDK 返回了不支持的 %1 通道帧；仅支持 1/3/4 通道 8 位帧")
+                            .arg(channels));
+    }
+    if (static_cast<qint64>(width) * height * channels > m_buffer.size()) {
         return failWith(QStringLiteral("SDK 返回了超缓冲区的帧尺寸"));
     }
     const int type = channels == 1 ? CV_8UC1 : channels == 3 ? CV_8UC3 : CV_8UC4;
